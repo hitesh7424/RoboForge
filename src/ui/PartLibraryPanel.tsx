@@ -6,6 +6,7 @@ import {
   Cylinder,
   Disc,
   Globe,
+  PanelLeftClose,
   Plus,
   Radar,
   Search,
@@ -262,6 +263,7 @@ export function PartLibraryPanel() {
   const setPendingJointAttach = useRoboForgeStore((s) => s.setPendingJointAttach);
   const openPartEditor = useRoboForgeStore((s) => s.openPartEditor);
   const addLog = useRoboForgeStore((s) => s.addLog);
+  const togglePanel = useRoboForgeStore((s) => s.togglePanel);
 
   const normalized = query.trim().toLowerCase();
   const filtered = LIBRARY_ENTRIES.filter(
@@ -341,7 +343,18 @@ export function PartLibraryPanel() {
     <section aria-label="Part Library" className="flex h-full flex-col bg-[#12161f]">
       <div className="flex items-center justify-between border-b border-[#222938] px-3 py-2 shrink-0">
         <h2 className="text-xs font-semibold text-slate-200">Part Library</h2>
-        <span className="text-[11px] text-slate-400 tabular-nums">Drag or click</span>
+        <div className="flex items-center gap-1.5">
+          <span className="text-[11px] text-slate-400 tabular-nums">Drag or click</span>
+          <button
+            type="button"
+            onClick={() => togglePanel('left')}
+            aria-label="Collapse left sidebar"
+            title="Collapse left sidebar"
+            className="inline-flex h-5 w-5 items-center justify-center rounded text-slate-400 hover:bg-[#1c2333] hover:text-slate-100 cursor-pointer"
+          >
+            <PanelLeftClose className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
 
       <div className="border-b border-[#222938] px-2.5 py-2 shrink-0">

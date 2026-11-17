@@ -185,7 +185,6 @@ export function SceneTreePanel() {
               size="icon"
               className="h-5 w-5 text-slate-400 hover:text-red-400"
               onClick={() => deleteLink(link.id)}
-              disabled={links.length <= 1}
               aria-label={`Delete ${link.name}`}
               title="Delete link"
             >
@@ -239,7 +238,15 @@ export function SceneTreePanel() {
           <span className="text-[11px] text-slate-400 shrink-0">Robot</span>
         </button>
 
-        <div className="space-y-0.5">{rootTrees.map((tree) => renderLinkBranch(tree, 0))}</div>
+        <div className="space-y-0.5">
+          {links.length === 0 ? (
+            <div className="rounded border border-dashed border-[#242d40] px-2.5 py-2 text-[11px] text-slate-500">
+              No links yet. Click or drop any shape from Part Library to spawn at global origin.
+            </div>
+          ) : (
+            rootTrees.map((tree) => renderLinkBranch(tree, 0))
+          )}
+        </div>
 
         {unattached.length > 0 && (
           <div className="pt-1 space-y-0.5 border-t border-[#222938]">

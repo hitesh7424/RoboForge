@@ -77,4 +77,18 @@ describe('ROS <-> Three.js coordinate conversions', () => {
     expect(xDir.x).toBeCloseTo(0, 4);
     expect(xDir.y).toBeCloseTo(1, 4);
   });
+
+  it('places unattached links at the global origin (0, 0, 0)', () => {
+    const base = createPrimitiveLink('base_link', { kind: 'box', size: [0.4, 0.3, 0.1] });
+    const loose1 = createPrimitiveLink('loose_1', { kind: 'box', size: [0.2, 0.2, 0.2] });
+    const loose2 = createPrimitiveLink('loose_2', { kind: 'sphere', radius: 0.1 });
+
+    const mats = computeLinkWorldMatrices([base, loose1, loose2], [], base.id);
+    for (const id of [base.id, loose1.id, loose2.id]) {
+      const pos = new THREE.Vector3().setFromMatrixPosition(mats.get(id)!);
+      expect(pos.x).toBe(0);
+      expect(pos.y).toBe(0);
+      expect(pos.z).toBe(0);
+    }
+  });
 });

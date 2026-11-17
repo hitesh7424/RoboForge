@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { AlertCircle, AlertTriangle, CheckCircle2, Trash2 } from 'lucide-react';
+import { AlertCircle, AlertTriangle, CheckCircle2, PanelBottomClose, Trash2 } from 'lucide-react';
 import { resolveLinkInertia } from '@/core/inertia';
 import { validateProject, type ValidationIssue } from '@/core/schema';
 import { useRoboForgeStore } from '@/core/store';
@@ -12,6 +12,7 @@ export function ValidationPanel() {
   const select = useRoboForgeStore((s) => s.select);
   const setMode = useRoboForgeStore((s) => s.setMode);
   const clearLogs = useRoboForgeStore((s) => s.clearLogs);
+  const togglePanel = useRoboForgeStore((s) => s.togglePanel);
 
   const issues = useMemo(() => {
     const base = validateProject(project);
@@ -90,17 +91,28 @@ export function ValidationPanel() {
             </div>
           </div>
 
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={clearLogs}
-            className="h-6 px-2 text-[11px] text-slate-400"
-            aria-label="Clear log entries"
-          >
-            <Trash2 className="h-3 w-3" />
-            Clear log
-          </Button>
+          <div className="flex items-center gap-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={clearLogs}
+              className="h-6 px-2 text-[11px] text-slate-400"
+              aria-label="Clear log entries"
+            >
+              <Trash2 className="h-3 w-3" />
+              Clear log
+            </Button>
+            <button
+              type="button"
+              onClick={() => togglePanel('bottom')}
+              aria-label="Collapse bottom bar"
+              title="Collapse bottom bar"
+              className="inline-flex h-6 w-6 items-center justify-center rounded text-slate-400 hover:bg-[#1c2333] hover:text-slate-100 cursor-pointer"
+            >
+              <PanelBottomClose className="h-3.5 w-3.5" />
+            </button>
+          </div>
         </div>
 
         <TabsContent value="validation" className="flex-1 overflow-y-auto p-2">

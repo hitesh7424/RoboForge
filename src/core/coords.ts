@@ -175,13 +175,10 @@ export function computeLinkWorldMatrices(
     }
   }
 
-  // Disconnected links sit slightly offset along +Y in preview if unattached
-  let disconnectedIndex = 0;
+  // Unattached links share the global origin (0, 0, 0)
   for (const link of links) {
     if (!result.has(link.id)) {
-      disconnectedIndex += 1;
-      const fallback = new THREE.Matrix4().makeTranslation(0, disconnectedIndex * 0.65, 0);
-      result.set(link.id, fallback);
+      result.set(link.id, new THREE.Matrix4().identity());
     }
   }
 

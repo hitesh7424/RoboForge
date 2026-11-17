@@ -7,7 +7,9 @@ import {
   Eye,
   FolderOpen,
   Globe,
-  Play,
+  PanelBottom,
+  PanelLeft,
+  PanelRight,
   Redo2,
   SlidersHorizontal,
   Undo2,
@@ -37,9 +39,8 @@ import {
 
 const MODES: { id: WorkspaceMode; label: string; icon: typeof Box }[] = [
   { id: 'robot', label: 'Robot', icon: Box },
-  { id: 'world', label: 'World', icon: Globe },
+  { id: 'world', label: 'World & Sim', icon: Globe },
   { id: 'preview', label: 'Preview', icon: Eye },
-  { id: 'simulate', label: 'Simulate', icon: Play },
 ];
 
 export function TopBar() {
@@ -62,6 +63,8 @@ export function TopBar() {
   const setExportModalOpen = useRoboForgeStore((s) => s.setExportModalOpen);
   const openPartEditor = useRoboForgeStore((s) => s.openPartEditor);
   const loadProject = useRoboForgeStore((s) => s.loadProject);
+  const collapsedPanels = useRoboForgeStore((s) => s.collapsedPanels);
+  const togglePanel = useRoboForgeStore((s) => s.togglePanel);
 
   const [nameDraft, setNameDraft] = useState(project.name);
   const [unitsOpen, setUnitsOpen] = useState(false);
@@ -205,7 +208,7 @@ export function TopBar() {
               aria-pressed={active}
               className={`inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 rounded px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer ${
                 active
-                  ? m.id === 'simulate'
+                  ? m.id === 'world'
                     ? 'bg-emerald-600 text-white'
                     : 'bg-blue-600 text-white'
                   : 'text-slate-400 hover:bg-[#161c28] hover:text-slate-100'
@@ -219,6 +222,55 @@ export function TopBar() {
       </nav>
 
       <div className="flex items-center gap-1.5 shrink-0">
+        {/* Panel collapse/expand toggles */}
+        <div
+          role="group"
+          aria-label="Toggle workspace panels"
+          className="flex items-center gap-0.5 rounded border border-[#232b3b] bg-[#0b0e14] p-0.5"
+        >
+          <button
+            type="button"
+            onClick={() => togglePanel('left')}
+            aria-label="Toggle left sidebar"
+            aria-pressed={!collapsedPanels.left}
+            title={collapsedPanels.left ? 'Show Left Sidebar' : 'Collapse Left Sidebar'}
+            className={`inline-flex h-6 w-6 items-center justify-center rounded transition-colors cursor-pointer ${
+              !collapsedPanels.left
+                ? 'bg-[#1e2636] text-blue-300'
+                : 'text-slate-500 hover:bg-[#161c28] hover:text-slate-200'
+            }`}
+          >
+            <PanelLeft className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => togglePanel('bottom')}
+            aria-label="Toggle bottom bar"
+            aria-pressed={!collapsedPanels.bottom}
+            title={collapsedPanels.bottom ? 'Show Bottom Bar' : 'Collapse Bottom Bar'}
+            className={`inline-flex h-6 w-6 items-center justify-center rounded transition-colors cursor-pointer ${
+              !collapsedPanels.bottom
+                ? 'bg-[#1e2636] text-blue-300'
+                : 'text-slate-500 hover:bg-[#161c28] hover:text-slate-200'
+            }`}
+          >
+            <PanelBottom className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => togglePanel('right')}
+            aria-label="Toggle right inspector"
+            aria-pressed={!collapsedPanels.right}
+            title={collapsedPanels.right ? 'Show Right Inspector' : 'Collapse Right Inspector'}
+            className={`inline-flex h-6 w-6 items-center justify-center rounded transition-colors cursor-pointer ${
+              !collapsedPanels.right
+                ? 'bg-[#1e2636] text-blue-300'
+                : 'text-slate-500 hover:bg-[#161c28] hover:text-slate-200'
+            }`}
+          >
+            <PanelRight className="h-3.5 w-3.5" />
+          </button>
+        </div>
         <span className="hidden 2xl:inline text-xs text-slate-400 tabular-nums whitespace-nowrap mr-1">
           {autosaveStatus === 'saving'
             ? 'Saving...'

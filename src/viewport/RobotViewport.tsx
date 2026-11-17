@@ -230,7 +230,11 @@ function JointAxisArrow({ axis, selected }: { axis: [number, number, number]; se
   );
 }
 
-function RobotSceneContent() {
+function RobotSceneContent({
+  isTransformingRef,
+}: {
+  isTransformingRef: React.MutableRefObject<boolean>;
+}) {
   const project = useRoboForgeStore((s) => s.project);
   const selection = useRoboForgeStore((s) => s.selection);
   const select = useRoboForgeStore((s) => s.select);
@@ -488,8 +492,10 @@ function RobotSceneContent() {
               position={position}
               quaternion={quaternion}
             >
-              {/* Show crisp local ROS axes on the selected link */}
-              {isLinkSelected && <ObjectAxesTriad length={0.22} />}
+              {/* Show local ROS axes aligned with the active edit target */}
+              {isLinkSelected && effectiveEditTarget === 'link_mount' && (
+                <ObjectAxesTriad length={0.22} />
+              )}
 
               {/* Visual Geometry Group (attachable to TransformControls when editing visual/scale) */}
               <group
@@ -499,6 +505,9 @@ function RobotSceneContent() {
                 position={visualPoseTf.position}
                 quaternion={visualPoseTf.quaternion}
               >
+                {isLinkSelected && effectiveEditTarget === 'link_visual' && (
+                  <ObjectAxesTriad length={0.22} />
+                )}
                 <GeometryRenderer
                   geometry={link.visual.geometry}
                   material={link.visual.material}
@@ -586,10 +595,16 @@ function RobotSceneContent() {
           rotationSnap={snapRotateDeg > 0 ? (snapRotateDeg * Math.PI) / 180 : null}
           scaleSnap={0.05}
           onObjectChange={() => invalidate()}
-          onMouseDown={() => setIsTransforming(true)}
+          onMouseDown={() => {
+            isTransformingRef.current = true;
+            setIsTransforming(true);
+          }}
           onMouseUp={() => {
             setIsTransforming(false);
             handleTransformCommit();
+            window.setTimeout(() => {
+              isTransformingRef.current = false;
+            }, 60);
           }}
         />
       )}
@@ -637,6 +652,7 @@ export function RobotViewport() {
   const setCameraView = useRoboForgeStore((s) => s.setCameraView);
   const triggerFocus = useRoboForgeStore((s) => s.triggerFocus);
 
+  const select = useRoboForgeStore((s) => s.select);
   const addLink = useRoboForgeStore((s) => s.addLink);
   const addSensor = useRoboForgeStore((s) => s.addSensor);
   const addPlugin = useRoboForgeStore((s) => s.addPlugin);
@@ -646,6 +662,9 @@ export function RobotViewport() {
   const addLog = useRoboForgeStore((s) => s.addLog);
 
   const [isDragOver, setIsDragOver] = useState(false);
+  const isTransformingRef = useRef(false);
+  const pointerDownPosRef = useRef<{ x: number; y: number } | null>(null);
+  const wasPointerDragRef = useRef(false);
   const soft = useMemo(() => isSoftwareGlRenderer(), []);
 
   const hasSelectedChildJoint =
@@ -867,14 +886,32 @@ export function RobotViewport() {
       </div>
 
       {/* 3D WebGL Canvas */}
-      <div className="relative flex-1 min-h-0">
+      <div
+        className="relative flex-1 min-h-0"
+        onPointerDown={(e) => {
+          pointerDownPosRef.current = { x: e.clientX, y: e.clientY };
+          wasPointerDragRef.current = false;
+        }}
+        onPointerMove={(e) => {
+          const start = pointerDownPosRef.current;
+          if (!start) return;
+          if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > 4) {
+            wasPointerDragRef.current = true;
+          }
+        }}
+      >
         <Canvas
           frameloop="demand"
           dpr={soft ? 1 : [1, 2]}
           shadows={!soft}
           gl={{ antialias: !soft }}
+          onPointerMissed={() => {
+            if (!isTransformingRef.current && !wasPointerDragRef.current) {
+              select(null);
+            }
+          }}
         >
-          <RobotSceneContent />
+          <RobotSceneContent isTransformingRef={isTransformingRef} />
         </Canvas>
 
         {/* Bottom HUD status strip (solid dark bg, no backdrop-blur) */}
@@ -887,6 +924,7 @@ export function RobotViewport() {
           <span className="font-mono text-slate-300">
             {cameraProjection === 'orthographic' ? 'Ortho' : 'Persp'} ({cameraView}) ·{' '}
             {transformSpace} · {viewOverlay}
+            {project.robot.links.length === 0 ? ' · Empty robot (drop a part to start)' : ''}
           </span>
         </div>
       </div>

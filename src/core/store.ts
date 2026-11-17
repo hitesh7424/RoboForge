@@ -33,7 +33,8 @@ import {
   type UnitPreferences,
 } from '@/core/units';
 
-export type WorkspaceMode = 'robot' | 'world' | 'preview' | 'simulate';
+export type WorkspaceMode = 'robot' | 'world' | 'preview';
+export type PanelKey = 'left' | 'right' | 'bottom';
 export type UnitSystem = UnitPreferences;
 export type AutosaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 export type TransformMode = 'translate' | 'rotate' | 'scale';
@@ -93,6 +94,11 @@ export interface RoboForgeState {
   focusTrigger: number;
   pendingJointAttach: PendingJointAttach | null;
 
+  collapsedPanels: Record<PanelKey, boolean>;
+  simTrackTarget: string; // 'none' | 'robot' | `object:${id}` | `link:${id}`
+  showLidarVis: boolean;
+  showCameraVis: boolean;
+
   isJsonModalOpen: boolean;
   isExportModalOpen: boolean;
   isPartEditorOpen: boolean;
@@ -124,6 +130,11 @@ export interface RoboForgeState {
   setWorldCameraMode: (mode: WorldCameraMode) => void;
   triggerFocus: () => void;
   setPendingJointAttach: (pending: PendingJointAttach | null) => void;
+  setPanelCollapsed: (panel: PanelKey, collapsed: boolean) => void;
+  togglePanel: (panel: PanelKey) => void;
+  setSimTrackTarget: (target: string) => void;
+  setShowLidarVis: (show: boolean) => void;
+  setShowCameraVis: (show: boolean) => void;
 
   setJsonModalOpen: (open: boolean) => void;
   setExportModalOpen: (open: boolean) => void;
@@ -293,6 +304,11 @@ export const useRoboForgeStore = create<RoboForgeState>()(
       focusTrigger: 0,
       pendingJointAttach: null,
 
+      collapsedPanels: { left: false, right: false, bottom: false },
+      simTrackTarget: 'none',
+      showLidarVis: false,
+      showCameraVis: false,
+
       isJsonModalOpen: false,
       isExportModalOpen: false,
       isPartEditorOpen: false,
@@ -369,6 +385,17 @@ export const useRoboForgeStore = create<RoboForgeState>()(
         }),
       triggerFocus: () => set((state) => void (state.focusTrigger += 1)),
       setPendingJointAttach: (pending) => set((state) => void (state.pendingJointAttach = pending)),
+      setPanelCollapsed: (panel, collapsed) =>
+        set((state) => {
+          state.collapsedPanels[panel] = collapsed;
+        }),
+      togglePanel: (panel) =>
+        set((state) => {
+          state.collapsedPanels[panel] = !state.collapsedPanels[panel];
+        }),
+      setSimTrackTarget: (target) => set((state) => void (state.simTrackTarget = target)),
+      setShowLidarVis: (show) => set((state) => void (state.showLidarVis = show)),
+      setShowCameraVis: (show) => set((state) => void (state.showCameraVis = show)),
 
       setJsonModalOpen: (open) => set((state) => void (state.isJsonModalOpen = open)),
       setExportModalOpen: (open) => set((state) => void (state.isExportModalOpen = open)),
@@ -642,9 +669,9 @@ export const useRoboForgeStore = create<RoboForgeState>()(
         });
 
         set((state) => {
-          if (state.selection?.type === 'link' && state.selection.id === linkId) {
-            const fallback = state.project.robot.links[0];
-            state.selection = fallback ? { type: 'link', id: fallback.id } : null;
+          reconcileSelection(state, state.project);
+          if (state.project.robot.links.length === 0) {
+            state.selection = null;
           }
           state.logs.unshift(makeLog('info', `Deleted link "${target.name}".`));
         });

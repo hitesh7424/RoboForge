@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { GitCommitHorizontal } from 'lucide-react';
+import { computeLinkWorldMatrices, rosMatrixToPose } from '@/core/coords';
 import { createZeroPose } from '@/core/defaults';
 import type { Joint } from '@/core/schema';
 import { useRoboForgeStore } from '@/core/store';
@@ -63,17 +64,17 @@ export function JointAttachDialog() {
   const handleAttach = () => {
     let targetMountId = parentMountId || parentLink.mounts[0]?.id || '';
     if (createDedicatedMount) {
-      const baseMount = parentLink.mounts.find((m) => m.id === targetMountId);
-      const basePose = baseMount ? structuredClone(baseMount.pose) : createZeroPose();
-      // Slightly offset new mount along +Z or +Y when cloning an occupied mount so parts don't overlap identically
-      if (isSelectedMountOccupied) {
-        basePose.xyz = [
-          basePose.xyz[0],
-          basePose.xyz[1] + 0.15,
-          basePose.xyz[2],
-        ];
-      }
-      const createdMount = addMountToLink(parentLink.id, suggestedMountName, basePose);
+      // Compute mount pose so the newly attached part spawns at the global origin (0, 0, 0)
+      const worldMats = computeLinkWorldMatrices(
+        project.robot.links,
+        project.robot.joints,
+        project.robot.rootLinkId,
+      );
+      const parentWorld = worldMats.get(parentLink.id);
+      const spawnAtGlobalOriginPose = parentWorld
+        ? rosMatrixToPose(parentWorld.clone().invert())
+        : createZeroPose();
+      const createdMount = addMountToLink(parentLink.id, suggestedMountName, spawnAtGlobalOriginPose);
       if (createdMount) {
         targetMountId = createdMount.id;
       }
