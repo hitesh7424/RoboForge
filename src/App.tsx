@@ -8,6 +8,7 @@ import { MujocoViewport } from '@/sim/MujocoViewport';
 import { ExportModal } from '@/ui/ExportModal';
 import { InspectorPanel } from '@/ui/InspectorPanel';
 import { JointAttachDialog } from '@/ui/JointAttachDialog';
+import { MapAnnotatorModal } from '@/ui/MapAnnotatorModal';
 import { PartLibraryPanel } from '@/ui/PartLibraryPanel';
 import { ProjectModal } from '@/ui/ProjectModal';
 import { SceneTreePanel } from '@/ui/SceneTreePanel';
@@ -325,6 +326,7 @@ export default function App() {
       <ExportModal />
       <PartEditorModal />
       <JointAttachDialog />
+      <MapAnnotatorModal />
     </div>
   );
 }

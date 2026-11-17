@@ -1,12 +1,64 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { poseToRosMatrix } from '@/core/coords';
-import type { Asset, Geometry, Material, Pose, Primitive } from '@/core/schema';
+import type {
+  Asset,
+  Geometry,
+  Material,
+  Pose,
+  Primitive,
+  TextureAsset,
+} from '@/core/schema';
 import {
   buildCompoundCsgGeometry,
   createPrimitiveBufferGeometry,
   loadAssetObject3D,
 } from '@/viewport/geometryBuilder';
+
+export function useTextureAsset(
+  textureAsset: TextureAsset | undefined,
+  repeat: [number, number] = [1, 1],
+): THREE.Texture | null {
+  const invalidate = useThree((s) => s.invalidate);
+  const [tex, setTex] = useState<THREE.Texture | null>(null);
+  const rx = repeat[0] > 0 ? repeat[0] : 1;
+  const ry = repeat[1] > 0 ? repeat[1] : 1;
+
+  useEffect(() => {
+    if (!textureAsset) {
+      setTex(null);
+      return;
+    }
+
+    let cancelled = false;
+    let loadedTexture: THREE.Texture | null = null;
+    const img = new Image();
+    img.onload = () => {
+      if (cancelled) return;
+      const t = new THREE.Texture(img);
+      t.colorSpace = THREE.SRGBColorSpace;
+      t.wrapS = THREE.RepeatWrapping;
+      t.wrapT = THREE.RepeatWrapping;
+      t.repeat.set(rx, ry);
+      t.anisotropy = 4;
+      t.needsUpdate = true;
+      loadedTexture = t;
+      setTex(t);
+      invalidate();
+    };
+    img.src = `data:${textureAsset.mimeType};base64,${textureAsset.dataBase64}`;
+
+    return () => {
+      cancelled = true;
+      if (loadedTexture) {
+        loadedTexture.dispose();
+      }
+    };
+  }, [textureAsset, rx, ry, invalidate]);
+
+  return tex;
+}
 
 interface PrimitiveMeshProps {
   shape: Primitive;
@@ -14,6 +66,8 @@ interface PrimitiveMeshProps {
   opacity?: number;
   wireframe?: boolean;
   pose?: Pose;
+  texture?: TextureAsset;
+  textureRepeat?: [number, number];
   onClick?: () => void;
 }
 
@@ -43,10 +97,13 @@ export function PrimitiveMesh({
   opacity = 1,
   wireframe = false,
   pose,
+  texture,
+  textureRepeat,
   onClick,
 }: PrimitiveMeshProps) {
   const geometry = useMemo(() => createPrimitiveBufferGeometry(shape), [shape]);
   const { position, quaternion } = useMemo(() => poseToArray(pose), [pose]);
+  const mapTex = useTextureAsset(wireframe ? undefined : texture, textureRepeat);
 
   useEffect(() => {
     return () => {
@@ -71,7 +128,9 @@ export function PrimitiveMesh({
       }
     >
       <meshStandardMaterial
+        key={mapTex ? `tex-${texture?.id ?? 'none'}` : 'flat'}
         color={colorHex}
+        map={mapTex ?? undefined}
         roughness={0.5}
         metalness={0.18}
         wireframe={wireframe}
@@ -146,6 +205,7 @@ interface GeometryRendererProps {
   geometry: Geometry;
   material: Material;
   assets: Asset[];
+  textures?: TextureAsset[];
   pose?: Pose;
   wireframe?: boolean;
   overrideColor?: string;
@@ -157,6 +217,7 @@ export function GeometryRenderer({
   geometry,
   material,
   assets,
+  textures = [],
   pose,
   wireframe = false,
   overrideColor,
@@ -167,6 +228,18 @@ export function GeometryRenderer({
   const colorHex = overrideColor ?? matColor;
   const opacity = overrideOpacity ?? matOpacity;
   const { position, quaternion } = useMemo(() => poseToArray(pose), [pose]);
+
+  const assignedTexture = useMemo(
+    () =>
+      !wireframe && material.textureId
+        ? textures.find((t) => t.id === material.textureId)
+        : undefined,
+    [wireframe, material.textureId, textures],
+  );
+  const csgTex = useTextureAsset(
+    geometry.type === 'compound' ? assignedTexture : undefined,
+    material.textureRepeat,
+  );
 
   const hasBooleanSubtract =
     geometry.type === 'compound' && geometry.parts.some((p) => p.op === 'subtract');
@@ -192,6 +265,8 @@ export function GeometryRenderer({
           colorHex={colorHex}
           opacity={opacity}
           wireframe={wireframe}
+          texture={assignedTexture}
+          textureRepeat={material.textureRepeat}
           onClick={onClick}
         />
       )}
@@ -211,7 +286,9 @@ export function GeometryRenderer({
           }
         >
           <meshStandardMaterial
+            key={csgTex ? `tex-${assignedTexture?.id ?? 'none'}` : 'flat'}
             color={colorHex}
+            map={csgTex ?? undefined}
             roughness={0.45}
             metalness={0.22}
             wireframe={wireframe}
@@ -231,6 +308,8 @@ export function GeometryRenderer({
             colorHex={colorHex}
             opacity={opacity}
             wireframe={wireframe}
+            texture={assignedTexture}
+            textureRepeat={material.textureRepeat}
             onClick={onClick}
           />
         ))}

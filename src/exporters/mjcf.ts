@@ -1,5 +1,7 @@
 import { computeGeometryInertia, resolveLinkInertia } from '@/core/inertia';
+import { computeElevationStats, DEFAULT_MAP_BACKGROUND } from '@/core/mapTiles';
 import type { Asset, Geometry, Link, Pose, Primitive, Project, Vec3 } from '@/core/schema';
+import { computeTreeInertial, getTreeParts } from '@/core/treeGeometry';
 import {
   composePoses,
   computePureJointOriginPose,
@@ -74,8 +76,18 @@ function renderMujocoGeoms(
 
   if (geometry.type === 'primitive') {
     const { type, size } = renderMujocoPrimitiveAttrs(geometry.shape);
+    let geomPose = basePose;
+    if (geometry.shape.kind === 'extrude' && geometry.shape.points.length > 0) {
+      const xs = geometry.shape.points.map((p) => p[0]);
+      const ys = geometry.shape.points.map((p) => p[1]);
+      const midX = (Math.min(...xs) + Math.max(...xs)) / 2;
+      const midY = (Math.min(...ys) + Math.max(...ys)) / 2;
+      if (Math.abs(midX) > 1e-6 || Math.abs(midY) > 1e-6) {
+        geomPose = composePoses(basePose, { xyz: [midX, midY, 0], rpy: [0, 0, 0] });
+      }
+    }
     lines.push(
-      `${indent}<geom name="${escapeXml(geomNamePrefix)}" type="${type}" pos="${fmtVec3(basePose.xyz)}" quat="${fmtQuat(basePose.rpy)}" size="${size}" rgba="${rgbaStr}"${collFlags}/>`,
+      `${indent}<geom name="${escapeXml(geomNamePrefix)}" type="${type}" pos="${fmtVec3(geomPose.xyz)}" quat="${fmtQuat(geomPose.rpy)}" size="${size}" rgba="${rgbaStr}"${collFlags}/>`,
     );
     return lines;
   }
@@ -174,27 +186,99 @@ export function generateMujocoXml(project: Project, options: MujocoExportOptions
     }
   }
 
+  const mapBg = world.mapBackground;
+  const elevStats = computeElevationStats(mapBg);
+  const useTerrainHfield =
+    world.ground.enabled &&
+    Boolean(mapBg?.enabled) &&
+    elevStats.hasRelief &&
+    (mapBg?.elevationGridSize ?? 0) >= 2;
+  const landExtent = Math.max(
+    10,
+    mapBg?.enabled ? (mapBg.landSizeMeters ?? DEFAULT_MAP_BACKGROUND.landSizeMeters) : 10,
+  );
+  const halfLand = landExtent / 2;
+
+  if (useTerrainHfield && mapBg?.elevationGridSize) {
+    const n = mapBg.elevationGridSize;
+    lines.push(
+      `    <hfield name="world_terrain" nrow="${n}" ncol="${n}" size="${fmt(halfLand)} ${fmt(halfLand)} ${fmt(Math.max(0.02, elevStats.rangeZ))} 0.5"/>`,
+    );
+  }
+
   lines.push(`  </asset>`);
   lines.push(``);
   lines.push(`  <worldbody>`);
   lines.push(`    <light pos="2 -2 5" dir="-0.3 0.3 -1" diffuse="0.95 0.95 0.92" directional="true"/>`);
 
   if (world.ground.enabled) {
-    const gx = Math.max(5, world.ground.size[0] / 2);
-    const gy = Math.max(5, world.ground.size[1] / 2);
-    lines.push(
-      `    <geom name="ground_plane" type="plane" size="${fmt(gx)} ${fmt(gy)} 0.1" material="grid_mat" friction="${fmt(world.ground.friction)} 0.005 0.0001"/>`,
-    );
+    if (useTerrainHfield) {
+      lines.push(
+        `    <geom name="ground_plane" type="hfield" hfield="world_terrain" pos="0 0 ${fmt(elevStats.minZ)}" material="grid_mat" friction="${fmt(world.ground.friction)} 0.005 0.0001"/>`,
+      );
+    } else {
+      const gx = Math.max(5, mapBg?.enabled ? halfLand : world.ground.size[0] / 2);
+      const gy = Math.max(5, mapBg?.enabled ? halfLand : world.ground.size[1] / 2);
+      lines.push(
+        `    <geom name="ground_plane" type="plane" size="${fmt(gx)} ${fmt(gy)} 0.1" material="grid_mat" friction="${fmt(world.ground.friction)} 0.005 0.0001"/>`,
+      );
+    }
   }
 
   if (includeWorldObjects) {
     for (const obj of world.objects) {
+      if (obj.source.type === 'tree') {
+        const parts = getTreeParts(obj.source);
+        if (obj.static) {
+          for (const part of parts) {
+            const { type, size } = renderMujocoPrimitiveAttrs(part.physicsShape);
+            const rgbaStr = part.rgba.map((c) => fmt(c, 3)).join(' ');
+            const worldPartPose = composePoses(obj.pose, part.pose);
+            lines.push(
+              `    <geom name="world_${escapeXml(obj.name)}_${escapeXml(part.id)}" type="${type}" pos="${fmtVec3(worldPartPose.xyz)}" quat="${fmtQuat(worldPartPose.rpy)}" size="${size}" rgba="${rgbaStr}"/>`,
+            );
+          }
+        } else {
+          const inertial = computeTreeInertial(obj.source, obj.mass ?? 35);
+          lines.push(
+            `    <body name="world_${escapeXml(obj.name)}" pos="${fmtVec3(obj.pose.xyz)}" quat="${fmtQuat(obj.pose.rpy)}">`,
+          );
+          lines.push(`      <freejoint name="world_free_${escapeXml(obj.name)}"/>`);
+          lines.push(
+            `      <inertial pos="${fmtVec3(inertial.com)}" mass="${fmt(inertial.mass)}" diaginertia="${fmt(inertial.inertia.ixx, 6)} ${fmt(inertial.inertia.iyy, 6)} ${fmt(inertial.inertia.izz, 6)}"/>`,
+          );
+          for (const part of parts) {
+            const { type, size } = renderMujocoPrimitiveAttrs(part.physicsShape);
+            const rgbaStr = part.rgba.map((c) => fmt(c, 3)).join(' ');
+            lines.push(
+              `      <geom name="world_geom_${escapeXml(obj.name)}_${escapeXml(part.id)}" type="${type}" pos="${fmtVec3(part.pose.xyz)}" quat="${fmtQuat(part.pose.rpy)}" size="${size}" rgba="${rgbaStr}"/>`,
+            );
+          }
+          lines.push(`    </body>`);
+        }
+        continue;
+      }
+
       if (obj.source.type !== 'primitive') continue;
       const { type, size } = renderMujocoPrimitiveAttrs(obj.source.shape);
       const rgbaStr = obj.source.material.rgba.map((c) => fmt(c, 3)).join(' ');
+      let geomOffset: [number, number, number] = [0, 0, 0];
+      if (obj.source.shape.kind === 'extrude' && obj.source.shape.points.length > 0) {
+        const xs = obj.source.shape.points.map((p) => p[0]);
+        const ys = obj.source.shape.points.map((p) => p[1]);
+        geomOffset = [
+          (Math.min(...xs) + Math.max(...xs)) / 2,
+          (Math.min(...ys) + Math.max(...ys)) / 2,
+          0,
+        ];
+      }
       if (obj.static) {
+        const staticPose =
+          geomOffset[0] !== 0 || geomOffset[1] !== 0
+            ? composePoses(obj.pose, { xyz: geomOffset, rpy: [0, 0, 0] })
+            : obj.pose;
         lines.push(
-          `    <geom name="world_${escapeXml(obj.name)}" type="${type}" pos="${fmtVec3(obj.pose.xyz)}" quat="${fmtQuat(obj.pose.rpy)}" size="${size}" rgba="${rgbaStr}"/>`,
+          `    <geom name="world_${escapeXml(obj.name)}" type="${type}" pos="${fmtVec3(staticPose.xyz)}" quat="${fmtQuat(staticPose.rpy)}" size="${size}" rgba="${rgbaStr}"/>`,
         );
       } else {
         const mass = obj.mass ?? 5.0;
@@ -204,10 +288,10 @@ export function generateMujocoXml(project: Project, options: MujocoExportOptions
         );
         lines.push(`      <freejoint name="world_free_${escapeXml(obj.name)}"/>`);
         lines.push(
-          `      <inertial pos="0 0 0" mass="${fmt(mass)}" diaginertia="${fmt(inertia.ixx, 6)} ${fmt(inertia.iyy, 6)} ${fmt(inertia.izz, 6)}"/>`,
+          `      <inertial pos="${fmtVec3(geomOffset)}" mass="${fmt(mass)}" diaginertia="${fmt(inertia.ixx, 6)} ${fmt(inertia.iyy, 6)} ${fmt(inertia.izz, 6)}"/>`,
         );
         lines.push(
-          `      <geom name="world_geom_${escapeXml(obj.name)}" type="${type}" size="${size}" rgba="${rgbaStr}"/>`,
+          `      <geom name="world_geom_${escapeXml(obj.name)}" type="${type}" pos="${fmtVec3(geomOffset)}" size="${size}" rgba="${rgbaStr}"/>`,
         );
         lines.push(`    </body>`);
       }

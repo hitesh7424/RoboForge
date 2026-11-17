@@ -1,5 +1,7 @@
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
+import { computeElevationStats } from '@/core/mapTiles';
+import { encodeGrayscalePng } from '@/core/pngEncode';
 import type { Project } from '@/core/schema';
 import { generateBridgeYaml } from '@/exporters/bridge';
 import { generateDisplayLaunchPy, generateSimLaunchPy } from '@/exporters/launch';
@@ -56,6 +58,42 @@ export function exportRos2Package(project: Project, overrideTarget?: TargetConfi
   } else {
     for (const asset of project.assets) {
       files[`meshes/${asset.name}.${asset.format}`] = base64ToUint8Array(asset.dataBase64);
+    }
+  }
+
+  const textures = project.textures ?? [];
+  const mapBg = project.world.mapBackground;
+  const elevStats = computeElevationStats(mapBg);
+  let hasDemTexture = false;
+
+  if (
+    project.world.ground.enabled &&
+    mapBg?.enabled &&
+    elevStats.hasRelief &&
+    mapBg.elevationGrid &&
+    (mapBg.elevationGridSize ?? 0) >= 2
+  ) {
+    const n = mapBg.elevationGridSize!;
+    const scale = mapBg.elevationScale ?? 1;
+    const pixels = new Uint8Array(n * n);
+    for (let row = 0; row < n; row++) {
+      // PNG top row (row=0) corresponds to North (+Y -> grid row n-1)
+      const srcRow = n - 1 - row;
+      for (let col = 0; col < n; col++) {
+        const z = (mapBg.elevationGrid[srcRow * n + col] ?? 0) * scale;
+        const norm = (z - elevStats.minZ) / Math.max(0.01, elevStats.rangeZ);
+        pixels[row * n + col] = Math.max(0, Math.min(255, Math.round(norm * 255)));
+      }
+    }
+    files[`materials/textures/${worldName}_dem.png`] = encodeGrayscalePng(n, n, pixels);
+    hasDemTexture = true;
+  }
+
+  if (textures.length === 0 && !hasDemTexture) {
+    files['materials/textures/.gitkeep'] = '';
+  } else {
+    for (const tex of textures) {
+      files[`materials/textures/${tex.name}.${tex.format}`] = base64ToUint8Array(tex.dataBase64);
     }
   }
 

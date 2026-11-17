@@ -7,6 +7,7 @@ import {
   createPrimitiveLink,
   createZeroPose,
 } from '@/core/defaults';
+import { DEFAULT_MAP_BACKGROUND } from '@/core/mapTiles';
 import type {
   Asset,
   CustomPart,
@@ -20,6 +21,7 @@ import type {
   Project,
   Sensor,
   TargetDistro,
+  TextureAsset,
   Vec3,
   World,
   WorldObject,
@@ -102,6 +104,7 @@ export interface RoboForgeState {
   isJsonModalOpen: boolean;
   isExportModalOpen: boolean;
   isPartEditorOpen: boolean;
+  isMapAnnotatorOpen: boolean;
   editingCustomPartId: string | null;
 
   autosaveStatus: AutosaveStatus;
@@ -138,6 +141,7 @@ export interface RoboForgeState {
 
   setJsonModalOpen: (open: boolean) => void;
   setExportModalOpen: (open: boolean) => void;
+  setMapAnnotatorOpen: (open: boolean) => void;
   openPartEditor: (customPartId?: string | null) => void;
   closePartEditor: () => void;
 
@@ -193,6 +197,11 @@ export interface RoboForgeState {
 
   // World mutations
   updateWorld: (updater: (world: World) => void) => void;
+  setTerrainElevation: (
+    grid: number[] | undefined,
+    gridSize?: number,
+    centerElevation?: number,
+  ) => void;
   addWorldObject: (
     name: string,
     source: WorldObjectSource,
@@ -206,10 +215,12 @@ export interface RoboForgeState {
   updateWorldLight: (lightId: string, updater: (light: Light) => void) => void;
   deleteWorldLight: (lightId: string) => void;
 
-  // Custom Parts & Assets
+  // Custom Parts, Mesh Assets & Textures
   saveCustomPart: (part: CustomPart) => void;
   deleteCustomPart: (partId: string) => void;
   addAsset: (asset: Asset) => void;
+  addTexture: (texture: TextureAsset) => void;
+  deleteTexture: (textureId: string) => void;
 
   loadProject: (
     project: Project,
@@ -312,6 +323,7 @@ export const useRoboForgeStore = create<RoboForgeState>()(
       isJsonModalOpen: false,
       isExportModalOpen: false,
       isPartEditorOpen: false,
+      isMapAnnotatorOpen: false,
       editingCustomPartId: null,
 
       autosaveStatus: 'idle',
@@ -399,6 +411,7 @@ export const useRoboForgeStore = create<RoboForgeState>()(
 
       setJsonModalOpen: (open) => set((state) => void (state.isJsonModalOpen = open)),
       setExportModalOpen: (open) => set((state) => void (state.isExportModalOpen = open)),
+      setMapAnnotatorOpen: (open) => set((state) => void (state.isMapAnnotatorOpen = open)),
       openPartEditor: (customPartId = null) =>
         set((state) => {
           state.isPartEditorOpen = true;
@@ -1089,6 +1102,20 @@ export const useRoboForgeStore = create<RoboForgeState>()(
         });
       },
 
+      setTerrainElevation: (grid, gridSize, centerElevation) => {
+        set((state) => {
+          if (!state.project.world.mapBackground) {
+            state.project.world.mapBackground = { ...DEFAULT_MAP_BACKGROUND };
+          }
+          const m = state.project.world.mapBackground;
+          m.elevationGrid = grid;
+          m.elevationGridSize = gridSize;
+          if (centerElevation !== undefined && Number.isFinite(centerElevation)) {
+            m.elevation = centerElevation;
+          }
+        });
+      },
+
       addWorldObject: (name, source, pose, isStatic = true, mass) => {
         const existingNames = new Set(get().project.world.objects.map((o) => o.name));
         const obj: WorldObject = {
@@ -1189,6 +1216,32 @@ export const useRoboForgeStore = create<RoboForgeState>()(
           project.assets.push(asset);
         });
         get().addLog('info', `Imported 3D mesh asset "${asset.name}.${asset.format}".`);
+      },
+
+      addTexture: (texture) => {
+        commitProject((project) => {
+          project.textures.push(texture);
+        });
+        get().addLog('info', `Imported texture "${texture.name}.${texture.format}".`);
+      },
+
+      deleteTexture: (textureId) => {
+        commitProject((project) => {
+          project.textures = project.textures.filter((t) => t.id !== textureId);
+          for (const link of project.robot.links) {
+            if (link.visual.material.textureId === textureId) {
+              delete link.visual.material.textureId;
+            }
+          }
+          if (project.world.ground.textureId === textureId) {
+            delete project.world.ground.textureId;
+          }
+          for (const obj of project.world.objects) {
+            if (obj.source.type === 'primitive' && obj.source.material.textureId === textureId) {
+              delete obj.source.material.textureId;
+            }
+          }
+        });
       },
 
       loadProject: (project, options) => {

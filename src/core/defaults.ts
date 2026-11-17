@@ -1,3 +1,4 @@
+import { DEFAULT_MAP_BACKGROUND } from '@/core/mapTiles';
 import type { Link, Pose, Primitive, Project, World } from '@/core/schema';
 
 export function createId(): string {
@@ -24,6 +25,7 @@ export function createDefaultWorld(): World {
       size: [50, 50],
       friction: 0.8,
     },
+    mapBackground: { ...DEFAULT_MAP_BACKGROUND },
     robotSpawnPose: { xyz: [0, 0, 0.15], rpy: [0, 0, 0] },
     lights: [
       {
@@ -102,5 +104,6 @@ export function createDefaultProject(): Project {
     world: createDefaultWorld(),
     customParts: [],
     assets: [],
+    textures: [],
   };
 }

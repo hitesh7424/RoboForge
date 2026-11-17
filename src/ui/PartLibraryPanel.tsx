@@ -11,9 +11,11 @@ import {
   Radar,
   Search,
   Shapes,
+  Trees,
   Wrench,
 } from 'lucide-react';
 import { ROBOFORGE_DRAG_MIME, type LibraryDragPayload } from '@/core/dragTypes';
+import { createDefaultTreeSource } from '@/core/treeGeometry';
 import { useRoboForgeStore } from '@/core/store';
 import { Input } from '@/ui/components/input';
 
@@ -231,6 +233,34 @@ const LIBRARY_ENTRIES: LibraryEntry[] = [
       },
       isStatic: true,
       defaultZ: 0.7,
+    },
+  },
+  {
+    id: 'world-tree-oak',
+    label: 'Dynamic Tree (Oak)',
+    category: 'World',
+    icon: Trees,
+    payload: {
+      kind: 'world_object',
+      name: 'oak_tree',
+      source: createDefaultTreeSource('deciduous'),
+      isStatic: false,
+      mass: 35,
+      defaultZ: 0,
+    },
+  },
+  {
+    id: 'world-tree-pine',
+    label: 'Dynamic Tree (Pine)',
+    category: 'World',
+    icon: Trees,
+    payload: {
+      kind: 'world_object',
+      name: 'pine_tree',
+      source: createDefaultTreeSource('pine'),
+      isStatic: false,
+      mass: 32,
+      defaultZ: 0,
     },
   },
   {

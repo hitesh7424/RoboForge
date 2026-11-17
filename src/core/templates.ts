@@ -337,6 +337,7 @@ export function createFourWheelRoverProject(target: TargetDistro = 'jazzy-harmon
       }),
     ],
     assets: [],
+    textures: [],
   };
 }
 
@@ -494,5 +495,6 @@ export function createTwoWheelCasterProject(target: TargetDistro = 'jazzy-harmon
     world: createDefaultWorld(),
     customParts: [],
     assets: [],
+    textures: [],
   };
 }

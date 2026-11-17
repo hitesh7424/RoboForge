@@ -1,5 +1,15 @@
 import { resolveLinkInertia } from '@/core/inertia';
-import type { Asset, Geometry, Joint, Link, Pose, Primitive, Project } from '@/core/schema';
+import type {
+  Asset,
+  Geometry,
+  Joint,
+  Link,
+  Material,
+  Pose,
+  Primitive,
+  Project,
+  TextureAsset,
+} from '@/core/schema';
 import type { TargetConfig } from '@/exporters/targets/types';
 import {
   composePoses,
@@ -37,14 +47,23 @@ function renderSdfGeometryElements(
   basePose: Pose,
   pkgName: string,
   assets: Asset[],
-  rgba?: [number, number, number, number],
+  material?: Material,
+  textures: TextureAsset[] = [],
 ): string {
+  const tex = material?.textureId
+    ? textures.find((t) => t.id === material.textureId)
+    : undefined;
   const matBlock =
-    tag === 'visual' && rgba
+    tag === 'visual' && material
       ? [
           `        <material>`,
-          `          <ambient>${rgba.map((c) => fmt(c, 3)).join(' ')}</ambient>`,
-          `          <diffuse>${rgba.map((c) => fmt(c, 3)).join(' ')}</diffuse>`,
+          `          <ambient>${material.rgba.map((c) => fmt(c, 3)).join(' ')}</ambient>`,
+          `          <diffuse>${material.rgba.map((c) => fmt(c, 3)).join(' ')}</diffuse>`,
+          ...(tex
+            ? [
+                `          <pbr><metal><albedo_map>model://${escapeXml(pkgName)}/materials/textures/${escapeXml(tex.name)}.${tex.format}</albedo_map></metal></pbr>`,
+              ]
+            : []),
           `        </material>`,
         ].join('\n')
       : '';
@@ -156,7 +175,7 @@ function computeSdfLinkPoses(
 }
 
 export function generateRobotSdf(project: Project, target: TargetConfig): string {
-  const { robot, name: pkgName, assets } = project;
+  const { robot, name: pkgName, assets, textures = [] } = project;
   const linkMap = new Map(robot.links.map((l) => [l.id, l]));
   const jointMap = new Map(robot.joints.map((j) => [j.id, j]));
   const linkPoses = computeSdfLinkPoses(robot.links, robot.joints, robot.rootLinkId);
@@ -213,7 +232,8 @@ export function generateRobotSdf(project: Project, target: TargetConfig): string
         link.visual.pose,
         pkgName,
         assets,
-        link.visual.material.rgba,
+        link.visual.material,
+        textures,
       ),
     );
 

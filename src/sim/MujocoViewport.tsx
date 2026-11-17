@@ -29,6 +29,7 @@ import {
   Gamepad2,
   GripHorizontal,
   LocateFixed,
+  Map as MapIcon,
   Minimize2,
   Move,
   Pause,
@@ -39,6 +40,7 @@ import {
   SkipForward,
   Square,
   Sun,
+  Trees,
   X,
 } from 'lucide-react';
 import loadMujoco, { type MainModule, type MjData, type MjModel } from 'mujoco-js';
@@ -51,8 +53,15 @@ import {
   rosVec3ToThree,
 } from '@/core/coords';
 import { ROBOFORGE_DRAG_MIME, type LibraryDragPayload } from '@/core/dragTypes';
+import {
+  computeElevationStats,
+  DEFAULT_MAP_BACKGROUND,
+  sampleElevationAt,
+} from '@/core/mapTiles';
 import type { Project, Sensor, WorldObject } from '@/core/schema';
 import { useRoboForgeStore } from '@/core/store';
+import { decodeHeightmapImageBase64, fetchTerrariumElevationGrid } from '@/core/terrain';
+import { createDefaultTreeSource } from '@/core/treeGeometry';
 import { formatLengthSummary, getUnitConversion, toDisplayValue } from '@/core/units';
 import { generateMujocoXml } from '@/exporters/mjcf';
 import {
@@ -62,6 +71,7 @@ import {
 } from '@/sim/simHelpers';
 import { GeometryRenderer, PrimitiveMesh } from '@/viewport/MeshAssetRenderer';
 import { CameraPresetBar, ViewportCameraRig } from '@/viewport/ViewportCameraRig';
+import { TreeObjectVisual, WorldGroundTerrainMesh } from '@/viewport/WorldTerrainMesh';
 import { isSoftwareGlRenderer, StudioEnvironment } from '@/viewport/webglCaps';
 
 const PIP_WIDTH = 240;
@@ -530,7 +540,7 @@ function MujocoSceneContent({
     const rt = new THREE.WebGLRenderTarget(PIP_WIDTH, PIP_HEIGHT, {
       colorSpace: THREE.SRGBColorSpace,
     });
-    const cam = new THREE.PerspectiveCamera(60, PIP_WIDTH / PIP_HEIGHT, 0.05, 60);
+    const cam = new THREE.PerspectiveCamera(60, PIP_WIDTH / PIP_HEIGHT, 0.05, 2000);
     const pixels = new Uint8Array(PIP_WIDTH * PIP_HEIGHT * 4);
     const flipped = new Uint8ClampedArray(PIP_WIDTH * PIP_HEIGHT * 4);
     const sensorMat = new THREE.Matrix4();
@@ -889,59 +899,54 @@ function MujocoSceneContent({
         focusTrigger={focusTrigger}
         defaultDistance={4.8}
         minDistance={0.35}
-        maxDistance={80}
+        maxDistance={Infinity}
         controlsEnabled={!isTransforming}
         orbitRef={orbitRef}
       />
 
-      <Grid
-        args={[
-          Math.max(20, project.world.ground.size[0]),
-          Math.max(20, project.world.ground.size[1]),
-        ]}
-        cellSize={0.5}
-        cellThickness={0.5}
-        cellColor="#1c2434"
-        sectionSize={2}
-        sectionThickness={1}
-        sectionColor="#2d3b54"
-        fadeDistance={40}
-        fadeStrength={1}
-        position={[0, 0.001, 0]}
-      />
+      {(() => {
+        const mapLandSize = project.world.mapBackground?.enabled
+          ? (project.world.mapBackground.landSizeMeters ?? DEFAULT_MAP_BACKGROUND.landSizeMeters)
+          : 20;
+        const gridExtent = Math.max(
+          50,
+          mapLandSize,
+          project.world.ground.size[0],
+          project.world.ground.size[1],
+        );
+        return (
+          <Grid
+            args={[gridExtent, gridExtent]}
+            cellSize={1}
+            cellThickness={0.5}
+            cellColor="#1c2434"
+            sectionSize={5}
+            sectionThickness={1}
+            sectionColor="#2d3b54"
+            fadeDistance={Math.max(80, gridExtent * 1.1)}
+            fadeStrength={1}
+            position={[0, 0.002, 0]}
+          />
+        );
+      })()}
 
       <group rotation={ROS_TO_THREE_EULER}>
-        {/* Raycastable Environment (Ground + World Objects) */}
+        {/* Raycastable Environment (Unified Map-Textured DEM Terrain / Ground + World Objects) */}
         <group ref={raycastGroupRef}>
-          {project.world.ground.enabled && (
-            <mesh
-              position={[0, 0, -0.01]}
-              receiveShadow={!soft}
-              onClick={(e) => {
-                if (!isEditingWorld) return;
-                e.stopPropagation();
-                select({ type: 'world' });
-              }}
-            >
-              <boxGeometry
-                args={[project.world.ground.size[0], project.world.ground.size[1], 0.02]}
-              />
-              <meshStandardMaterial color="#151b26" roughness={0.92} metalness={0.05} />
-            </mesh>
-          )}
+          <WorldGroundTerrainMesh
+            ground={project.world.ground}
+            mapBackground={project.world.mapBackground}
+            textures={project.textures}
+            soft={soft}
+            isEditingWorld={isEditingWorld}
+            onSelectWorld={() => select({ type: 'world' })}
+          />
 
           {project.world.objects.map((obj: WorldObject) => {
-            if (obj.source.type !== 'primitive') return null;
+            if (obj.source.type !== 'primitive' && obj.source.type !== 'tree') return null;
             const tf = matrixToPosQuat(poseToRosMatrix(obj.pose));
             const isSelected =
               isEditingWorld && selection?.type === 'worldObject' && selection.id === obj.id;
-            const colorHex = isSelected
-              ? '#60a5fa'
-              : `#${new THREE.Color(
-                  obj.source.material.rgba[0],
-                  obj.source.material.rgba[1],
-                  obj.source.material.rgba[2],
-                ).getHexString()}`;
 
             return (
               <group
@@ -961,11 +966,32 @@ function MujocoSceneContent({
                 }}
               >
                 {isSelected && <ObjectAxesTriad length={0.42} />}
-                <PrimitiveMesh
-                  shape={obj.source.shape}
-                  colorHex={colorHex}
-                  opacity={obj.source.material.rgba[3]}
-                />
+                {obj.source.type === 'tree' ? (
+                  <TreeObjectVisual source={obj.source} selected={isSelected} />
+                ) : (
+                  (() => {
+                    const mat = obj.source.material;
+                    const colorHex = isSelected
+                      ? '#60a5fa'
+                      : `#${new THREE.Color(
+                          mat.rgba[0],
+                          mat.rgba[1],
+                          mat.rgba[2],
+                        ).getHexString()}`;
+                    const objTex = mat.textureId
+                      ? project.textures.find((t) => t.id === mat.textureId)
+                      : undefined;
+                    return (
+                      <PrimitiveMesh
+                        shape={obj.source.shape}
+                        colorHex={colorHex}
+                        opacity={mat.rgba[3]}
+                        texture={isSelected ? undefined : objTex}
+                        textureRepeat={mat.textureRepeat}
+                      />
+                    );
+                  })()
+                )}
               </group>
             );
           })}
@@ -1000,6 +1026,7 @@ function MujocoSceneContent({
                     pose={link.visual.pose}
                     material={link.visual.material}
                     assets={project.assets}
+                    textures={project.textures}
                   />
                 </group>
               );
@@ -1025,6 +1052,7 @@ function MujocoSceneContent({
                 pose={link.visual.pose}
                 material={link.visual.material}
                 assets={project.assets}
+                textures={project.textures}
               />
             </group>
           ))
@@ -1137,6 +1165,8 @@ export function MujocoViewport() {
   const triggerFocus = useRoboForgeStore((s) => s.triggerFocus);
   const addWorldObject = useRoboForgeStore((s) => s.addWorldObject);
   const addWorldLight = useRoboForgeStore((s) => s.addWorldLight);
+  const setTerrainElevation = useRoboForgeStore((s) => s.setTerrainElevation);
+  const setMapAnnotatorOpen = useRoboForgeStore((s) => s.setMapAnnotatorOpen);
 
   const [runtimeVersion, setRuntimeVersion] = useState(0);
   const [actuatorsUi, setActuatorsUi] = useState<ActuatorInfo[]>([]);
@@ -1157,8 +1187,10 @@ export function MujocoViewport() {
   // Drag & drop obstacle state
   const [isDragOver, setIsDragOver] = useState(false);
 
-  // Floating controller state (position + collapse)
+  // Floating controller state (position + collapse + active tab + drive speed)
   const [ctrlCollapsed, setCtrlCollapsed] = useState(false);
+  const [ctrlTab, setCtrlTab] = useState<'teleop' | 'joints' | 'sim'>('teleop');
+  const [driveSpeed, setDriveSpeed] = useState(10);
   const [ctrlPos, setCtrlPos] = useState<{ x: number; y: number } | null>(null);
 
   // Camera PiP selector state
@@ -1257,9 +1289,82 @@ export function MujocoViewport() {
     return { leftNames, rightNames };
   }, [project.robot.plugins, project.robot.joints]);
 
+  const mapBg = project.world.mapBackground;
+  const hasElevationGridRef = useRef(Boolean(mapBg?.elevationGrid));
+  hasElevationGridRef.current = Boolean(mapBg?.elevationGrid);
+
+  // Fetch Terrarium RGB DEM elevation tiles or decode imported heightmap PNG whenever terrain params change
+  useEffect(() => {
+    let active = true;
+    const enabled = Boolean(mapBg?.enabled && mapBg?.elevationEnabled);
+    if (!enabled) {
+      if (hasElevationGridRef.current) {
+        setTerrainElevation(undefined);
+      }
+      return;
+    }
+
+    const segments = Math.max(
+      4,
+      Math.min(96, Math.round(mapBg?.terrainSegments ?? DEFAULT_MAP_BACKGROUND.terrainSegments)),
+    );
+    const landSize = Math.max(
+      10,
+      mapBg?.landSizeMeters ?? DEFAULT_MAP_BACKGROUND.landSizeMeters,
+    );
+    const source = mapBg?.elevationSource ?? 'terrarium';
+
+    if (source === 'heightmap') {
+      if (mapBg?.heightmapBase64 && mapBg?.heightmapMimeType) {
+        decodeHeightmapImageBase64(
+          mapBg.heightmapBase64,
+          mapBg.heightmapMimeType,
+          segments,
+          mapBg.heightmapMaxHeight ?? 25,
+        ).then((res) => {
+          if (!active || !res) return;
+          setTerrainElevation(res.relativeGrid, res.gridSize, res.centerElevation);
+        });
+      }
+      return () => {
+        active = false;
+      };
+    }
+
+    fetchTerrariumElevationGrid(
+      mapBg?.latitude ?? DEFAULT_MAP_BACKGROUND.latitude,
+      mapBg?.longitude ?? DEFAULT_MAP_BACKGROUND.longitude,
+      landSize,
+      segments,
+      mapBg?.elevationUrl ?? DEFAULT_MAP_BACKGROUND.elevationUrl,
+      15,
+    ).then((res) => {
+      if (!active || !res) return;
+      setTerrainElevation(res.relativeGrid, res.gridSize, res.centerElevation);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [
+    mapBg?.enabled,
+    mapBg?.elevationEnabled,
+    mapBg?.elevationSource,
+    mapBg?.elevationUrl,
+    mapBg?.latitude,
+    mapBg?.longitude,
+    mapBg?.landSizeMeters,
+    mapBg?.terrainSegments,
+    mapBg?.heightmapBase64,
+    mapBg?.heightmapMimeType,
+    mapBg?.heightmapMaxHeight,
+    setTerrainElevation,
+  ]);
+
   // Compile MJCF into WASM MjModel + MjData whenever project changes
   useEffect(() => {
     let active = true;
+    const mapBgSnapshot = project.world.mapBackground;
     if (!runtimeRef.current) {
       setLoading(true);
     }
@@ -1305,6 +1410,21 @@ export function MujocoViewport() {
         mujoco.FS.writeFile('/scene.xml', mjcfXml);
 
         const model = mujoco.MjModel.loadFromXML('/scene.xml');
+        if (
+          model.nhfield > 0 &&
+          mapBgSnapshot?.elevationGrid &&
+          (mapBgSnapshot.elevationGridSize ?? 0) >= 2
+        ) {
+          const stats = computeElevationStats(mapBgSnapshot);
+          const scale = mapBgSnapshot.elevationScale ?? 1;
+          const denom = Math.max(0.01, stats.rangeZ);
+          const grid = mapBgSnapshot.elevationGrid;
+          const count = Math.min(model.hfield_data.length, grid.length);
+          for (let i = 0; i < count; i++) {
+            const norm = ((grid[i] ?? 0) * scale - stats.minZ) / denom;
+            model.hfield_data[i] = Math.max(0, Math.min(1, norm));
+          }
+        }
         const data = new mujoco.MjData(model);
         mujoco.mj_forward(model, data);
 
@@ -1373,7 +1493,14 @@ export function MujocoViewport() {
       runtimeRef.current = null;
       disposeRuntime(rt);
     };
-  }, [mjcfXml, project.assets, project.robot.links, project.robot.joints, project.robot.rootLinkId]);
+  }, [
+    mjcfXml,
+    project.assets,
+    project.robot.links,
+    project.robot.joints,
+    project.robot.rootLinkId,
+    project.world.mapBackground,
+  ]);
 
   const handleReset = useCallback(() => {
     const rt = runtimeRef.current;
@@ -1441,22 +1568,23 @@ export function MujocoViewport() {
         return;
       }
       const key = e.key.toLowerCase();
+      const turnSpeed = Math.max(1, Math.round(driveSpeed * 0.6));
       if (key === 'arrowup') {
         e.preventDefault();
         setIsPlaying(true);
-        applyDriveCommand(10, 10);
+        applyDriveCommand(driveSpeed, driveSpeed);
       } else if (key === 'arrowdown') {
         e.preventDefault();
         setIsPlaying(true);
-        applyDriveCommand(-10, -10);
+        applyDriveCommand(-driveSpeed, -driveSpeed);
       } else if (key === 'arrowleft') {
         e.preventDefault();
         setIsPlaying(true);
-        applyDriveCommand(-6, 6);
+        applyDriveCommand(-turnSpeed, turnSpeed);
       } else if (key === 'arrowright') {
         e.preventDefault();
         setIsPlaying(true);
-        applyDriveCommand(6, -6);
+        applyDriveCommand(turnSpeed, -turnSpeed);
       } else if (key === ' ') {
         e.preventDefault();
         applyDriveCommand(0, 0);
@@ -1475,7 +1603,7 @@ export function MujocoViewport() {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [driveMapping, applyDriveCommand]);
+  }, [driveMapping, applyDriveCommand, driveSpeed]);
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -1681,7 +1809,10 @@ export function MujocoViewport() {
                   shape: { kind: 'box', size: [0.6, 0.6, 0.6] },
                   material: { name: 'crate_amber', rgba: [0.76, 0.52, 0.22, 1] },
                 },
-                { xyz: [1.5, 0, 0.3], rpy: [0, 0, 0] },
+                {
+                  xyz: [1.5, 0, sampleElevationAt(project.world.mapBackground, 1.5, 0) + 0.3],
+                  rpy: [0, 0, 0],
+                },
                 false,
                 5,
               )
@@ -1693,10 +1824,40 @@ export function MujocoViewport() {
 
           <button
             type="button"
+            onClick={() =>
+              addWorldObject(
+                'tree_oak',
+                createDefaultTreeSource('deciduous'),
+                {
+                  xyz: [2.0, 2.0, sampleElevationAt(project.world.mapBackground, 2.0, 2.0)],
+                  rpy: [0, 0, 0],
+                },
+                false,
+                35,
+              )
+            }
+            className="inline-flex h-7 items-center gap-1 rounded border border-[#2a3346] bg-[#0e121a] px-2 text-[11px] text-slate-300 hover:bg-[#1a202e] whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <Trees className="h-3 w-3 text-emerald-400" />+ Tree
+          </button>
+
+          <button
+            type="button"
             onClick={() => addWorldLight('point')}
             className="inline-flex h-7 items-center gap-1 rounded border border-[#2a3346] bg-[#0e121a] px-2 text-[11px] text-slate-300 hover:bg-[#1a202e] whitespace-nowrap shrink-0 cursor-pointer"
           >
             <Sun className="h-3 w-3 text-yellow-400" />+ Light
+          </button>
+
+          <button
+            type="button"
+            data-testid="open-map-builder-btn"
+            onClick={() => setMapAnnotatorOpen(true)}
+            title="Open 2D Map Feature Builder (draw tree canopies & building polygons with live 3D preview)"
+            className="inline-flex h-7 items-center gap-1 rounded border border-emerald-600/60 bg-emerald-950/50 px-2.5 text-[11px] font-medium text-emerald-200 hover:bg-emerald-900/60 whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <MapIcon className="h-3 w-3 text-emerald-400" />
+            2D Map Builder
           </button>
         </div>
 
@@ -1808,7 +1969,7 @@ export function MujocoViewport() {
         <Canvas
           frameloop="demand"
           dpr={soft ? 1 : [1, 2]}
-          shadows={!soft}
+          shadows={soft ? false : 'percentage'}
           gl={{ antialias: !soft }}
           onPointerMissed={() => {
             if (isEditingWorld && !isTransformingRef.current && !wasPointerDragRef.current) {
@@ -1929,7 +2090,7 @@ export function MujocoViewport() {
             style={
               ctrlPos ? { left: `${ctrlPos.x}px`, top: `${ctrlPos.y}px` } : { right: '12px', top: '12px' }
             }
-            className="absolute z-20 flex w-64 max-h-[calc(100%-64px)] flex-col rounded-md border border-[#2a3346] bg-[#10141d] shadow-2xl"
+            className="absolute z-20 flex w-72 max-h-[calc(100%-64px)] flex-col rounded-md border border-[#2a3346] bg-[#10141d] shadow-2xl"
           >
             <div
               onPointerDown={handleStartCtrlDrag}
@@ -1957,125 +2118,338 @@ export function MujocoViewport() {
               </div>
             </div>
 
+            {/* Control Tabs: Teleop | Joints | Sim */}
+            <div className="grid grid-cols-3 border-b border-[#222938] bg-[#0b0e14] p-1 gap-1 shrink-0">
+              {(['teleop', 'joints', 'sim'] as const).map((tab) => {
+                const label = tab === 'teleop' ? 'Teleop' : tab === 'joints' ? 'Joints' : 'Sim';
+                const active = ctrlTab === tab;
+                return (
+                  <button
+                    key={tab}
+                    type="button"
+                    data-testid={`sim-tab-${tab}`}
+                    aria-pressed={active}
+                    onClick={() => setCtrlTab(tab)}
+                    className={`rounded py-1 text-[11px] font-medium cursor-pointer transition-colors ${
+                      active
+                        ? 'bg-emerald-600 text-white'
+                        : 'text-slate-400 hover:bg-[#151b27] hover:text-slate-200'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+
             <div className="flex-1 overflow-y-auto p-3 space-y-3">
-              {hasDiffDrive && (
-                <div className="rounded border border-[#222938] bg-[#0b0e14] p-2.5 space-y-2">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-semibold text-slate-200">Rover Teleop</span>
-                    <span className="text-[10px] font-mono text-slate-400">Arrows / Space</span>
-                  </div>
-                  <div className="grid grid-cols-3 gap-1.5">
-                    <div />
-                    <button
-                      type="button"
-                      onPointerDown={() => {
-                        setIsPlaying(true);
-                        applyDriveCommand(10, 10);
-                      }}
-                      onPointerUp={() => applyDriveCommand(0, 0)}
-                      onPointerLeave={() => applyDriveCommand(0, 0)}
-                      className="flex h-8 items-center justify-center rounded border border-[#2a3346] bg-[#141a26] text-slate-200 hover:bg-blue-600 cursor-pointer"
-                      aria-label="Drive forward"
-                    >
-                      <ArrowUp className="h-4 w-4" />
-                    </button>
-                    <div />
+              {ctrlTab === 'teleop' && (
+                <div data-testid="sim-panel-teleop" className="space-y-3">
+                  {hasDiffDrive ? (
+                    <div className="rounded border border-[#222938] bg-[#0b0e14] p-2.5 space-y-2.5">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-semibold text-slate-200">Rover Teleop</span>
+                        <span className="text-[10px] font-mono text-slate-400">Arrows / Space</span>
+                      </div>
 
-                    <button
-                      type="button"
-                      onPointerDown={() => {
-                        setIsPlaying(true);
-                        applyDriveCommand(-6, 6);
-                      }}
-                      onPointerUp={() => applyDriveCommand(0, 0)}
-                      onPointerLeave={() => applyDriveCommand(0, 0)}
-                      className="flex h-8 items-center justify-center rounded border border-[#2a3346] bg-[#141a26] text-slate-200 hover:bg-blue-600 cursor-pointer"
-                      aria-label="Turn left"
-                    >
-                      <ArrowLeft className="h-4 w-4" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => applyDriveCommand(0, 0)}
-                      className="flex h-8 items-center justify-center rounded border border-[#2a3346] bg-[#141a26] text-red-300 hover:bg-red-900/40 cursor-pointer"
-                      aria-label="Stop wheels"
-                    >
-                      <Square className="h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onPointerDown={() => {
-                        setIsPlaying(true);
-                        applyDriveCommand(6, -6);
-                      }}
-                      onPointerUp={() => applyDriveCommand(0, 0)}
-                      onPointerLeave={() => applyDriveCommand(0, 0)}
-                      className="flex h-8 items-center justify-center rounded border border-[#2a3346] bg-[#141a26] text-slate-200 hover:bg-blue-600 cursor-pointer"
-                      aria-label="Turn right"
-                    >
-                      <ArrowRight className="h-4 w-4" />
-                    </button>
-
-                    <div />
-                    <button
-                      type="button"
-                      onPointerDown={() => {
-                        setIsPlaying(true);
-                        applyDriveCommand(-10, -10);
-                      }}
-                      onPointerUp={() => applyDriveCommand(0, 0)}
-                      onPointerLeave={() => applyDriveCommand(0, 0)}
-                      className="flex h-8 items-center justify-center rounded border border-[#2a3346] bg-[#141a26] text-slate-200 hover:bg-blue-600 cursor-pointer"
-                      aria-label="Drive backward"
-                    >
-                      <ArrowDown className="h-4 w-4" />
-                    </button>
-                    <div />
-                  </div>
-                </div>
-              )}
-
-              <div className="space-y-2.5">
-                <div className="text-xs font-semibold text-slate-300">Actuator Targets</div>
-                {actuatorsUi.length === 0 ? (
-                  <p className="text-xs text-slate-500">
-                    No movable joints in this robot. Add revolute, continuous, or prismatic joints
-                    to actuate them in MuJoCo.
-                  </p>
-                ) : (
-                  actuatorsUi.map((act) => {
-                    const val = ctrlValuesUi[act.index] ?? 0;
-                    const unitMode =
-                      act.jointType === 'prismatic'
-                        ? 'length'
-                        : act.jointType === 'revolute'
-                          ? 'angle'
-                          : 'ang_vel';
-                    const conv = getUnitConversion(unitMode, units);
-                    const disp = toDisplayValue(val, unitMode, units);
-                    return (
-                      <div key={act.name} className="space-y-1">
-                        <div className="flex items-center justify-between gap-2 text-xs">
-                          <span className="font-mono text-slate-200 truncate">{act.jointName}</span>
-                          <span className="font-mono text-[11px] text-emerald-300 tabular-nums whitespace-nowrap shrink-0">
-                            {disp.toFixed(2)} {conv.label}
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="text-slate-400">Drive Speed</span>
+                          <span className="font-mono text-emerald-300 tabular-nums">
+                            {driveSpeed} rad/s
                           </span>
                         </div>
                         <input
                           type="range"
-                          aria-label={`Actuator ${act.jointName}`}
-                          min={act.min}
-                          max={act.max}
-                          step={act.jointType === 'continuous' ? 0.5 : 0.02}
-                          value={val}
-                          onChange={(e) => setActuatorCtrl(act.index, Number(e.target.value))}
+                          aria-label="Teleop drive speed"
+                          min={2}
+                          max={20}
+                          step={1}
+                          value={driveSpeed}
+                          onChange={(e) => setDriveSpeed(Number(e.target.value))}
                           className="w-full accent-emerald-500 cursor-pointer"
                         />
                       </div>
-                    );
-                  })
-                )}
-              </div>
+
+                      <div className="grid grid-cols-3 gap-1.5">
+                        <div />
+                        <button
+                          type="button"
+                          onPointerDown={() => {
+                            setIsPlaying(true);
+                            applyDriveCommand(driveSpeed, driveSpeed);
+                          }}
+                          onPointerUp={() => applyDriveCommand(0, 0)}
+                          onPointerLeave={() => applyDriveCommand(0, 0)}
+                          className="flex h-8 items-center justify-center rounded border border-[#2a3346] bg-[#141a26] text-slate-200 hover:bg-blue-600 cursor-pointer"
+                          aria-label="Drive forward"
+                        >
+                          <ArrowUp className="h-4 w-4" />
+                        </button>
+                        <div />
+
+                        <button
+                          type="button"
+                          onPointerDown={() => {
+                            const turn = Math.max(1, Math.round(driveSpeed * 0.6));
+                            setIsPlaying(true);
+                            applyDriveCommand(-turn, turn);
+                          }}
+                          onPointerUp={() => applyDriveCommand(0, 0)}
+                          onPointerLeave={() => applyDriveCommand(0, 0)}
+                          className="flex h-8 items-center justify-center rounded border border-[#2a3346] bg-[#141a26] text-slate-200 hover:bg-blue-600 cursor-pointer"
+                          aria-label="Turn left"
+                        >
+                          <ArrowLeft className="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => applyDriveCommand(0, 0)}
+                          className="flex h-8 items-center justify-center rounded border border-[#2a3346] bg-[#141a26] text-red-300 hover:bg-red-900/40 cursor-pointer"
+                          aria-label="Stop wheels"
+                        >
+                          <Square className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onPointerDown={() => {
+                            const turn = Math.max(1, Math.round(driveSpeed * 0.6));
+                            setIsPlaying(true);
+                            applyDriveCommand(turn, -turn);
+                          }}
+                          onPointerUp={() => applyDriveCommand(0, 0)}
+                          onPointerLeave={() => applyDriveCommand(0, 0)}
+                          className="flex h-8 items-center justify-center rounded border border-[#2a3346] bg-[#141a26] text-slate-200 hover:bg-blue-600 cursor-pointer"
+                          aria-label="Turn right"
+                        >
+                          <ArrowRight className="h-4 w-4" />
+                        </button>
+
+                        <div />
+                        <button
+                          type="button"
+                          onPointerDown={() => {
+                            setIsPlaying(true);
+                            applyDriveCommand(-driveSpeed, -driveSpeed);
+                          }}
+                          onPointerUp={() => applyDriveCommand(0, 0)}
+                          onPointerLeave={() => applyDriveCommand(0, 0)}
+                          className="flex h-8 items-center justify-center rounded border border-[#2a3346] bg-[#141a26] text-slate-200 hover:bg-blue-600 cursor-pointer"
+                          aria-label="Drive backward"
+                        >
+                          <ArrowDown className="h-4 w-4" />
+                        </button>
+                        <div />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="rounded border border-[#222938] bg-[#0b0e14] p-3 text-xs text-slate-400 space-y-1.5">
+                      <div className="font-semibold text-slate-200">No Differential Drive Wheels</div>
+                      <p className="text-[11px] leading-relaxed">
+                        Add a diff-drive plugin or continuous left/right wheel joints to enable
+                        D-pad &amp; keyboard teleop, or switch to the <strong className="text-slate-200">Joints</strong> tab for manual joint control.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {ctrlTab === 'joints' && (
+                <div data-testid="sim-panel-joints" className="space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-slate-300">
+                      Manual Joint Control
+                    </span>
+                    {actuatorsUi.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const zeros = new Array(actuatorsUi.length).fill(0);
+                          ctrlValuesRef.current = zeros;
+                          setCtrlValuesUi(zeros);
+                        }}
+                        className="rounded border border-[#2a3346] bg-[#0e121a] px-2 py-0.5 text-[10px] text-slate-300 hover:bg-[#1a202e] cursor-pointer"
+                      >
+                        Zero All
+                      </button>
+                    )}
+                  </div>
+
+                  {actuatorsUi.length === 0 ? (
+                    <p className="text-xs text-slate-500">
+                      No movable joints in this robot. Add revolute, continuous, or prismatic joints
+                      to actuate them in MuJoCo.
+                    </p>
+                  ) : (
+                    actuatorsUi.map((act) => {
+                      const val = ctrlValuesUi[act.index] ?? 0;
+                      const unitMode =
+                        act.jointType === 'prismatic'
+                          ? 'length'
+                          : act.jointType === 'revolute'
+                            ? 'angle'
+                            : 'ang_vel';
+                      const conv = getUnitConversion(unitMode, units);
+                      const disp = toDisplayValue(val, unitMode, units);
+                      return (
+                        <div key={act.name} className="space-y-1 rounded border border-[#1f2636] bg-[#0b0e14] p-2">
+                          <div className="flex items-center justify-between gap-2 text-xs">
+                            <span className="font-mono text-slate-200 truncate">{act.jointName}</span>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <span className="font-mono text-[11px] text-emerald-300 tabular-nums whitespace-nowrap">
+                                {disp.toFixed(2)} {conv.label}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setActuatorCtrl(act.index, 0)}
+                                title={`Zero ${act.jointName}`}
+                                className="rounded border border-[#2a3346] px-1 text-[10px] text-slate-400 hover:text-slate-100 cursor-pointer"
+                              >
+                                0
+                              </button>
+                            </div>
+                          </div>
+                          <input
+                            type="range"
+                            aria-label={`Actuator ${act.jointName}`}
+                            min={act.min}
+                            max={act.max}
+                            step={act.jointType === 'continuous' ? 0.5 : 0.02}
+                            value={val}
+                            onChange={(e) => setActuatorCtrl(act.index, Number(e.target.value))}
+                            className="w-full accent-emerald-500 cursor-pointer"
+                          />
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              )}
+
+              {ctrlTab === 'sim' && (
+                <div data-testid="sim-panel-sim" className="space-y-3">
+                  <div className="grid grid-cols-3 gap-1.5">
+                    <button
+                      type="button"
+                      disabled={loading || Boolean(error)}
+                      onClick={() => setIsPlaying((p) => !p)}
+                      className={`inline-flex h-7 items-center justify-center gap-1 rounded text-[11px] font-medium cursor-pointer disabled:opacity-50 ${
+                        isPlaying
+                          ? 'bg-amber-600 text-white hover:bg-amber-500'
+                          : 'bg-emerald-600 text-white hover:bg-emerald-500'
+                      }`}
+                    >
+                      {isPlaying ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
+                      {isPlaying ? 'Pause' : 'Play'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={loading || Boolean(error)}
+                      onClick={handleStep}
+                      className="inline-flex h-7 items-center justify-center gap-1 rounded border border-[#2a3346] bg-[#0e121a] text-[11px] text-slate-200 hover:bg-[#1a202e] cursor-pointer disabled:opacity-50"
+                    >
+                      <SkipForward className="h-3 w-3" />
+                      Step
+                    </button>
+                    <button
+                      type="button"
+                      disabled={loading || Boolean(error)}
+                      onClick={handleReset}
+                      className="inline-flex h-7 items-center justify-center gap-1 rounded border border-[#2a3346] bg-[#0e121a] text-[11px] text-slate-200 hover:bg-[#1a202e] cursor-pointer disabled:opacity-50"
+                    >
+                      <RotateCcw className="h-3 w-3" />
+                      Reset
+                    </button>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="flex items-center justify-between gap-2 text-xs text-slate-300">
+                      <span>Sim Speed</span>
+                      <select
+                        value={simSpeed}
+                        onChange={(e) => setSimSpeed(Number(e.target.value))}
+                        className="h-7 rounded border border-[#2a3346] bg-[#0e121a] px-2 font-mono text-[11px] text-slate-200"
+                      >
+                        <option value={0.25}>0.25x</option>
+                        <option value={0.5}>0.5x</option>
+                        <option value={1}>1.0x</option>
+                        <option value={2}>2.0x</option>
+                      </select>
+                    </label>
+
+                    <label className="flex items-center justify-between gap-2 text-xs text-slate-300">
+                      <span>Camera Track</span>
+                      <select
+                        value={simTrackTarget}
+                        onChange={(e) => setSimTrackTarget(e.target.value)}
+                        className="h-7 max-w-[140px] rounded border border-[#2a3346] bg-[#0e121a] px-2 font-mono text-[11px] text-slate-200"
+                      >
+                        <option value="none">Free</option>
+                        {rootLink && <option value="robot">Robot</option>}
+                        {project.world.objects.map((obj) => (
+                          <option key={obj.id} value={`object:${obj.id}`}>
+                            {obj.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setShowLidarVis(!showLidarVis)}
+                      className={`inline-flex h-7 items-center justify-center gap-1 rounded border text-[11px] cursor-pointer ${
+                        showLidarVis
+                          ? 'border-cyan-500 bg-cyan-950/50 text-cyan-200'
+                          : 'border-[#2a3346] bg-[#0e121a] text-slate-300 hover:bg-[#1a202e]'
+                      }`}
+                    >
+                      <Radar className="h-3 w-3" />
+                      LiDAR Vis
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowCameraVis(!showCameraVis)}
+                      className={`inline-flex h-7 items-center justify-center gap-1 rounded border text-[11px] cursor-pointer ${
+                        showCameraVis
+                          ? 'border-amber-500 bg-amber-950/50 text-amber-200'
+                          : 'border-[#2a3346] bg-[#0e121a] text-slate-300 hover:bg-[#1a202e]'
+                      }`}
+                    >
+                      <Camera className="h-3 w-3" />
+                      Camera PiP
+                    </button>
+                  </div>
+
+                  <div className="rounded border border-[#222938] bg-[#0b0e14] p-2 font-mono text-[11px] text-slate-300 space-y-1 tabular-nums">
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Sim Time</span>
+                      <span>
+                        {toDisplayValue(telemetry.simTime, 'time', units).toFixed(
+                          units.time === 'ms' ? 0 : 2,
+                        )}{' '}
+                        {timeUnitConv.label}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Contacts</span>
+                      <span>{telemetry.contacts}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Root Z</span>
+                      <span>{formatLengthSummary(telemetry.rootZ, units, 3)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Linear Speed</span>
+                      <span>
+                        {toDisplayValue(telemetry.linearSpeed, 'lin_vel', units).toFixed(2)}{' '}
+                        {speedUnitConv.label}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}

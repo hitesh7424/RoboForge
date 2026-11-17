@@ -67,11 +67,14 @@ export function TopBar() {
   const togglePanel = useRoboForgeStore((s) => s.togglePanel);
 
   const [nameDraft, setNameDraft] = useState(project.name);
+  const nameFocusedRef = useRef(false);
   const [unitsOpen, setUnitsOpen] = useState(false);
   const unitsMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    setNameDraft(project.name);
+    if (!nameFocusedRef.current) {
+      setNameDraft(project.name);
+    }
   }, [project.name]);
 
   useEffect(() => {
@@ -93,6 +96,7 @@ export function TopBar() {
   }, [unitsOpen]);
 
   const commitName = () => {
+    nameFocusedRef.current = false;
     const trimmed = nameDraft.trim();
     if (!trimmed) {
       setNameDraft(project.name);
@@ -139,12 +143,23 @@ export function TopBar() {
             id="project-name-input"
             aria-label="Project package name"
             value={nameDraft}
-            onChange={(e) => setNameDraft(e.target.value)}
+            onFocus={() => {
+              nameFocusedRef.current = true;
+            }}
+            onChange={(e) => {
+              const raw = e.target.value;
+              setNameDraft(raw);
+              const trimmed = raw.trim();
+              if (isValidRosName(trimmed) && trimmed !== project.name) {
+                setProjectName(trimmed);
+              }
+            }}
             onBlur={commitName}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 e.currentTarget.blur();
               } else if (e.key === 'Escape') {
+                nameFocusedRef.current = false;
                 setNameDraft(project.name);
                 e.currentTarget.blur();
               }

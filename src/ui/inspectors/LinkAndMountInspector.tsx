@@ -8,6 +8,7 @@ import { formatInertiaSummary } from '@/core/units';
 import { Button } from '@/ui/components/button';
 import { Input } from '@/ui/components/input';
 import { NumericField, PoseFields, RosNameField } from '@/ui/inspectors/NumericField';
+import { TexturePicker } from '@/ui/inspectors/TexturePicker';
 
 function rgbaToHex(rgba: [number, number, number, number]): string {
   const r = Math.round(rgba[0] * 255)
@@ -239,6 +240,27 @@ export function LinkInspector({ link }: { link: Link }) {
             />
           </div>
         </div>
+
+        <TexturePicker
+          idPrefix={`link-${link.id}`}
+          textureId={link.visual.material.textureId}
+          textureRepeat={link.visual.material.textureRepeat}
+          onChangeTexture={(nextTexId) =>
+            updateLink(link.id, (draft) => {
+              if (nextTexId) {
+                draft.visual.material.textureId = nextTexId;
+                draft.visual.material.rgba = [1, 1, 1, draft.visual.material.rgba[3]];
+              } else {
+                delete draft.visual.material.textureId;
+              }
+            })
+          }
+          onChangeRepeat={(rep) =>
+            updateLink(link.id, (draft) => {
+              draft.visual.material.textureRepeat = rep;
+            })
+          }
+        />
 
         <div className="pt-1">
           <span className="block pb-1 text-[11px] text-slate-400">Visual Origin Pose</span>

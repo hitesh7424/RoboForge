@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { isValidRosName, type Pose } from '@/core/schema';
 import {
   getUnitConversion,
@@ -40,16 +40,39 @@ export function NumericField({
     return Number(converted.toFixed(5)).toString();
   };
 
-  const [draft, setDraft] = useState(formatDisplay(value));
+  const [draft, setDraft] = useState(() => formatDisplay(value));
+  const isFocusedRef = useRef(false);
 
   useEffect(() => {
-    setDraft(formatDisplay(value));
+    if (!isFocusedRef.current) {
+      setDraft(formatDisplay(value));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value, unitMode, unitSystem]);
 
-  const commit = () => {
-    const parsed = Number(draft);
-    if (!Number.isFinite(parsed)) {
+  const handleLiveChange = (raw: string) => {
+    setDraft(raw);
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed === '-' || trimmed === '.' || trimmed === '-.') {
+      return;
+    }
+    const parsed = Number(trimmed);
+    if (!Number.isFinite(parsed)) return;
+
+    const internal = toInternalSi(parsed, unitMode, unitSystem);
+    if (min !== undefined && internal < min) return;
+    if (max !== undefined && internal > max) return;
+
+    if (Math.abs(internal - value) > 1e-9) {
+      onCommit(internal);
+    }
+  };
+
+  const commitFinal = () => {
+    isFocusedRef.current = false;
+    const trimmed = draft.trim();
+    const parsed = Number(trimmed);
+    if (!trimmed || !Number.isFinite(parsed)) {
       setDraft(formatDisplay(value));
       return;
     }
@@ -58,9 +81,8 @@ export function NumericField({
     if (max !== undefined && internal > max) internal = max;
     if (Math.abs(internal - value) > 1e-9) {
       onCommit(internal);
-    } else {
-      setDraft(formatDisplay(value));
     }
+    setDraft(formatDisplay(internal));
   };
 
   return (
@@ -74,12 +96,16 @@ export function NumericField({
         type="number"
         step={conv.suggestedStep}
         value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
+        onFocus={() => {
+          isFocusedRef.current = true;
+        }}
+        onChange={(e) => handleLiveChange(e.target.value)}
+        onBlur={commitFinal}
         onKeyDown={(e) => {
           if (e.key === 'Enter') {
             e.currentTarget.blur();
           } else if (e.key === 'Escape') {
+            isFocusedRef.current = false;
             setDraft(formatDisplay(value));
             e.currentTarget.blur();
           }
@@ -102,14 +128,26 @@ export function RosNameField({
   onCommit: (nextName: string) => void;
 }) {
   const [draft, setDraft] = useState(value);
+  const isFocusedRef = useRef(false);
 
   useEffect(() => {
-    setDraft(value);
+    if (!isFocusedRef.current) {
+      setDraft(value);
+    }
   }, [value]);
 
   const valid = isValidRosName(draft);
 
-  const commit = () => {
+  const handleLiveChange = (raw: string) => {
+    setDraft(raw);
+    const trimmed = raw.trim();
+    if (isValidRosName(trimmed) && trimmed !== value) {
+      onCommit(trimmed);
+    }
+  };
+
+  const commitFinal = () => {
+    isFocusedRef.current = false;
     const trimmed = draft.trim();
     if (!trimmed) {
       setDraft(value);
@@ -128,12 +166,16 @@ export function RosNameField({
       <Input
         id={id}
         value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
+        onFocus={() => {
+          isFocusedRef.current = true;
+        }}
+        onChange={(e) => handleLiveChange(e.target.value)}
+        onBlur={commitFinal}
         onKeyDown={(e) => {
           if (e.key === 'Enter') {
             e.currentTarget.blur();
           } else if (e.key === 'Escape') {
+            isFocusedRef.current = false;
             setDraft(value);
             e.currentTarget.blur();
           }

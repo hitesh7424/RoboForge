@@ -1,13 +1,101 @@
-import { Trash2 } from 'lucide-react';
+import { useRef, useState } from 'react';
+import { Globe, Map as MapIcon, MapPin, Mountain, Trash2, Trees, Upload } from 'lucide-react';
+import {
+  computeElevationStats,
+  DEFAULT_MAP_BACKGROUND,
+  MAP_TILE_PRESETS,
+  parseCoordinateInput,
+  TERRARIUM_URL_DEFAULT,
+} from '@/core/mapTiles';
 import type { Light, World, WorldObject } from '@/core/schema';
 import { useRoboForgeStore } from '@/core/store';
+import {
+  DEFAULT_DECIDUOUS_COLOR,
+  DEFAULT_PINE_COLOR,
+  DEFAULT_TRUNK_COLOR,
+} from '@/core/treeGeometry';
 import { Button } from '@/ui/components/button';
 import { Input } from '@/ui/components/input';
 import { NumericField, PoseFields, RosNameField } from '@/ui/inspectors/NumericField';
+import { TexturePicker } from '@/ui/inspectors/TexturePicker';
+
+function rgbaToHex(rgba: [number, number, number, number]): string {
+  const r = Math.round(rgba[0] * 255)
+    .toString(16)
+    .padStart(2, '0');
+  const g = Math.round(rgba[1] * 255)
+    .toString(16)
+    .padStart(2, '0');
+  const b = Math.round(rgba[2] * 255)
+    .toString(16)
+    .padStart(2, '0');
+  return `#${r}${g}${b}`;
+}
+
+function hexToRgbTuple(hex: string): [number, number, number] {
+  const clean = hex.replace('#', '');
+  const r = parseInt(clean.slice(0, 2), 16) / 255;
+  const g = parseInt(clean.slice(2, 4), 16) / 255;
+  const b = parseInt(clean.slice(4, 6), 16) / 255;
+  return [Number.isFinite(r) ? r : 0.5, Number.isFinite(g) ? g : 0.5, Number.isFinite(b) ? b : 0.5];
+}
 
 export function WorldSettingsInspector({ world }: { world: World }) {
   const units = useRoboForgeStore((s) => s.units);
   const updateWorld = useRoboForgeStore((s) => s.updateWorld);
+  const setMapAnnotatorOpen = useRoboForgeStore((s) => s.setMapAnnotatorOpen);
+  const heightmapInputRef = useRef<HTMLInputElement | null>(null);
+  const mapBg: NonNullable<World['mapBackground']> =
+    world.mapBackground ?? DEFAULT_MAP_BACKGROUND;
+  const elevStats = computeElevationStats(mapBg);
+  const [coordInput, setCoordInput] = useState(
+    `${mapBg.latitude.toFixed(6)}, ${mapBg.longitude.toFixed(6)}`,
+  );
+  const [coordError, setCoordError] = useState(false);
+
+  const ensureMapBackground = (w: World) => {
+    if (!w.mapBackground) {
+      w.mapBackground = { ...DEFAULT_MAP_BACKGROUND };
+    }
+    return w.mapBackground;
+  };
+
+  const handleHeightmapFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : '';
+      const comma = result.indexOf(',');
+      if (comma < 0) return;
+      const base64 = result.slice(comma + 1);
+      updateWorld((w) => {
+        const m = ensureMapBackground(w);
+        m.enabled = true;
+        m.elevationEnabled = true;
+        m.elevationSource = 'heightmap';
+        m.heightmapBase64 = base64;
+        m.heightmapMimeType = file.type || 'image/png';
+      });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const applyCoordPaste = () => {
+    const parsed = parseCoordinateInput(coordInput);
+    if (!parsed) {
+      setCoordError(true);
+      return;
+    }
+    setCoordError(false);
+    updateWorld((w) => {
+      const m = ensureMapBackground(w);
+      m.latitude = parsed.lat;
+      m.longitude = parsed.lon;
+      m.enabled = true;
+    });
+  };
 
   return (
     <div className="space-y-4">
@@ -134,6 +222,376 @@ export function WorldSettingsInspector({ world }: { world: World }) {
             }
           />
         </div>
+
+        <TexturePicker
+          idPrefix="ground-plane"
+          textureId={world.ground.textureId}
+          textureRepeat={world.ground.textureRepeat ?? [10, 10]}
+          onChangeTexture={(nextTexId) =>
+            updateWorld((w) => {
+              if (nextTexId) {
+                w.ground.textureId = nextTexId;
+                if (!w.ground.textureRepeat) {
+                  w.ground.textureRepeat = [10, 10];
+                }
+              } else {
+                delete w.ground.textureId;
+              }
+            })
+          }
+          onChangeRepeat={(rep) =>
+            updateWorld((w) => {
+              w.ground.textureRepeat = rep;
+            })
+          }
+        />
+      </div>
+
+      {/* Real-World Map Tile Background + SDF Spherical Coordinates */}
+      <div className="space-y-2.5 border-t border-[#222938] pt-3">
+        <div className="flex items-center justify-between">
+          <span className="flex items-center gap-1.5 text-xs font-semibold text-slate-200">
+            <Globe className="h-3.5 w-3.5 text-emerald-400" />
+            Map Tile Background (SDF)
+          </span>
+          <label className="flex items-center gap-1.5 text-[11px] text-slate-300 cursor-pointer">
+            <input
+              type="checkbox"
+              aria-label="Enable map tile background"
+              checked={mapBg.enabled}
+              onChange={(e) =>
+                updateWorld((w) => {
+                  ensureMapBackground(w).enabled = e.target.checked;
+                })
+              }
+            />
+            Enabled
+          </label>
+        </div>
+
+        <div className="space-y-1">
+          <label htmlFor="map-preset-select" className="text-[11px] text-slate-400">
+            Tile Provider Preset
+          </label>
+          <select
+            id="map-preset-select"
+            value={
+              MAP_TILE_PRESETS.find((p) => p.urlTemplate === mapBg.tileUrl)?.id ?? 'custom'
+            }
+            onChange={(e) => {
+              const preset = MAP_TILE_PRESETS.find((p) => p.id === e.target.value);
+              if (!preset) return;
+              updateWorld((w) => {
+                const m = ensureMapBackground(w);
+                m.tileUrl = preset.urlTemplate;
+                m.enabled = true;
+              });
+            }}
+            className="h-7 w-full rounded border border-[#2a3346] bg-[#0e121a] px-2 text-xs text-slate-200"
+          >
+            {MAP_TILE_PRESETS.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+              </option>
+            ))}
+            <option value="custom">Custom Tile URL Template</option>
+          </select>
+        </div>
+
+        <label className="block space-y-1">
+          <span className="text-[11px] text-slate-400">Tile URL Template ({'{x} {y} {z}'})</span>
+          <Input
+            id="map-tile-url"
+            aria-label="Map tile URL template"
+            value={mapBg.tileUrl}
+            onChange={(e) =>
+              updateWorld((w) => {
+                ensureMapBackground(w).tileUrl = e.target.value;
+              })
+            }
+            className="font-mono text-[11px]"
+          />
+        </label>
+
+        <div className="space-y-1">
+          <label htmlFor="map-coord-paste" className="flex items-center gap-1 text-[11px] text-slate-400">
+            <MapPin className="h-3 w-3 text-emerald-400" />
+            Center Coordinate (Lat, Lon → ROS 0,0)
+          </label>
+          <div className="flex items-center gap-1.5">
+            <Input
+              id="map-coord-paste"
+              placeholder="37.4220, -122.0841"
+              value={coordInput}
+              onChange={(e) => {
+                setCoordInput(e.target.value);
+                setCoordError(false);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') applyCoordPaste();
+              }}
+              className={`font-mono text-[11px] ${coordError ? 'border-red-500' : ''}`}
+            />
+            <Button type="button" size="sm" variant="secondary" onClick={applyCoordPaste}>
+              Center
+            </Button>
+          </div>
+          {coordError && (
+            <p className="text-[10px] text-red-400">Enter &quot;lat, lon&quot; (e.g. 37.422, -122.0841).</p>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <NumericField
+            id="map-lat"
+            label="Latitude (deg)"
+            value={mapBg.latitude}
+            unitMode="raw"
+            unitSystem={units}
+            step={0.0001}
+            min={-85.05}
+            max={85.05}
+            onCommit={(val) => {
+              setCoordInput(`${val.toFixed(6)}, ${mapBg.longitude.toFixed(6)}`);
+              updateWorld((w) => {
+                ensureMapBackground(w).latitude = val;
+              });
+            }}
+          />
+          <NumericField
+            id="map-lon"
+            label="Longitude (deg)"
+            value={mapBg.longitude}
+            unitMode="raw"
+            unitSystem={units}
+            step={0.0001}
+            min={-180}
+            max={180}
+            onCommit={(val) => {
+              setCoordInput(`${mapBg.latitude.toFixed(6)}, ${val.toFixed(6)}`);
+              updateWorld((w) => {
+                ensureMapBackground(w).longitude = val;
+              });
+            }}
+          />
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <NumericField
+            id="map-land-size"
+            label="Land Size (m)"
+            value={mapBg.landSizeMeters ?? DEFAULT_MAP_BACKGROUND.landSizeMeters}
+            unitMode="raw"
+            unitSystem={units}
+            step={10}
+            min={10}
+            max={5000}
+            onCommit={(val) =>
+              updateWorld((w) => {
+                ensureMapBackground(w).landSizeMeters = Math.max(10, Math.min(5000, val));
+              })
+            }
+          />
+          <NumericField
+            id="map-zoom"
+            label="Tile Zoom (1-21)"
+            value={mapBg.zoom}
+            unitMode="raw"
+            unitSystem={units}
+            step={1}
+            min={1}
+            max={21}
+            onCommit={(val) =>
+              updateWorld((w) => {
+                ensureMapBackground(w).zoom = Math.max(1, Math.min(21, Math.round(val)));
+              })
+            }
+          />
+          <NumericField
+            id="map-heading"
+            label="Heading (deg)"
+            value={mapBg.headingDeg}
+            unitMode="raw"
+            unitSystem={units}
+            step={1}
+            onCommit={(val) =>
+              updateWorld((w) => {
+                ensureMapBackground(w).headingDeg = val;
+              })
+            }
+          />
+          <NumericField
+            id="map-opacity"
+            label="Map Opacity"
+            value={mapBg.opacity}
+            unitMode="raw"
+            unitSystem={units}
+            step={0.05}
+            min={0.05}
+            max={1}
+            onCommit={(val) =>
+              updateWorld((w) => {
+                ensureMapBackground(w).opacity = val;
+              })
+            }
+          />
+        </div>
+
+        {/* Elevation / DEM Terrain Controls */}
+        <div className="space-y-2 rounded border border-[#222938] bg-[#0b0e14] p-2">
+          <div className="flex items-center justify-between">
+            <span className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-200">
+              <Mountain className="h-3.5 w-3.5 text-amber-400" />
+              Elevation Terrain (DEM)
+            </span>
+            <label className="flex items-center gap-1.5 text-[11px] text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
+                aria-label="Enable elevation terrain DEM"
+                checked={Boolean(mapBg.elevationEnabled)}
+                onChange={(e) =>
+                  updateWorld((w) => {
+                    const m = ensureMapBackground(w);
+                    m.elevationEnabled = e.target.checked;
+                    if (e.target.checked) m.enabled = true;
+                  })
+                }
+              />
+              Active
+            </label>
+          </div>
+
+          <div className="space-y-1">
+            <label htmlFor="dem-source-select" className="text-[10px] text-slate-400">
+              Elevation Data Source
+            </label>
+            <select
+              id="dem-source-select"
+              value={mapBg.elevationSource ?? 'terrarium'}
+              onChange={(e) =>
+                updateWorld((w) => {
+                  const m = ensureMapBackground(w);
+                  m.elevationSource = e.target.value as 'terrarium' | 'custom_url' | 'heightmap';
+                  m.elevationEnabled = true;
+                })
+              }
+              className="h-7 w-full rounded border border-[#2a3346] bg-[#0e121a] px-2 text-xs text-slate-200"
+            >
+              <option value="terrarium">Real-World DEM Tiles (AWS Terrarium)</option>
+              <option value="custom_url">Custom DEM Tile URL</option>
+              <option value="heightmap">Imported Grayscale Heightmap Image</option>
+            </select>
+          </div>
+
+          {(mapBg.elevationSource ?? 'terrarium') === 'custom_url' && (
+            <label className="block space-y-1">
+              <span className="text-[10px] text-slate-400">DEM Tile URL ({'{x} {y} {z}'})</span>
+              <Input
+                aria-label="DEM tile URL template"
+                value={mapBg.elevationUrl ?? TERRARIUM_URL_DEFAULT}
+                onChange={(e) =>
+                  updateWorld((w) => {
+                    ensureMapBackground(w).elevationUrl = e.target.value;
+                  })
+                }
+                className="font-mono text-[11px]"
+              />
+            </label>
+          )}
+
+          {mapBg.elevationSource === 'heightmap' && (
+            <div className="space-y-1.5">
+              <input
+                ref={heightmapInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                onChange={handleHeightmapFile}
+                className="hidden"
+              />
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  className="flex-1"
+                  onClick={() => heightmapInputRef.current?.click()}
+                >
+                  <Upload className="h-3.5 w-3.5" />
+                  {mapBg.heightmapBase64 ? 'Replace Heightmap Image' : 'Import Heightmap PNG/JPG'}
+                </Button>
+              </div>
+              <NumericField
+                id="dem-max-h"
+                label="Max Heightmap Relief (m)"
+                value={mapBg.heightmapMaxHeight ?? 25}
+                unitMode="raw"
+                unitSystem={units}
+                step={1}
+                min={1}
+                max={500}
+                onCommit={(val) =>
+                  updateWorld((w) => {
+                    ensureMapBackground(w).heightmapMaxHeight = Math.max(1, val);
+                  })
+                }
+              />
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-2">
+            <NumericField
+              id="dem-scale"
+              label="Vertical Scale (x)"
+              value={mapBg.elevationScale ?? 1}
+              unitMode="raw"
+              unitSystem={units}
+              step={0.1}
+              min={0}
+              max={20}
+              onCommit={(val) =>
+                updateWorld((w) => {
+                  ensureMapBackground(w).elevationScale = Math.max(0, val);
+                })
+              }
+            />
+            <NumericField
+              id="dem-segs"
+              label="Terrain Grid"
+              value={mapBg.terrainSegments ?? 40}
+              unitMode="raw"
+              unitSystem={units}
+              step={4}
+              min={8}
+              max={96}
+              onCommit={(val) =>
+                updateWorld((w) => {
+                  ensureMapBackground(w).terrainSegments = Math.max(8, Math.min(96, Math.round(val)));
+                })
+              }
+            />
+          </div>
+
+          <div className="flex items-center justify-between font-mono text-[10px] text-slate-400">
+            <span>Base Elev: {mapBg.elevation.toFixed(1)}m</span>
+            <span>
+              Relief:{' '}
+              {mapBg.elevationGridSize
+                ? `${elevStats.minZ.toFixed(1)}..${elevStats.maxZ.toFixed(1)}m (${mapBg.elevationGridSize}×${mapBg.elevationGridSize})`
+                : 'Flat / Pending'}
+            </span>
+          </div>
+        </div>
+
+        <Button
+          type="button"
+          data-testid="inspector-open-map-builder"
+          size="sm"
+          className="w-full bg-emerald-700 text-white hover:bg-emerald-600"
+          onClick={() => setMapAnnotatorOpen(true)}
+        >
+          <MapIcon className="h-3.5 w-3.5" />
+          Open 2D Map Builder (Trees &amp; Buildings)
+        </Button>
       </div>
 
       <div className="space-y-1.5 border-t border-[#222938] pt-3">
@@ -157,6 +615,7 @@ export function WorldObjectInspector({ obj }: { obj: WorldObject }) {
   const units = useRoboForgeStore((s) => s.units);
   const updateWorldObject = useRoboForgeStore((s) => s.updateWorldObject);
   const deleteWorldObject = useRoboForgeStore((s) => s.deleteWorldObject);
+  const setMapAnnotatorOpen = useRoboForgeStore((s) => s.setMapAnnotatorOpen);
 
   return (
     <div className="space-y-4">
@@ -171,7 +630,7 @@ export function WorldObjectInspector({ obj }: { obj: WorldObject }) {
         }
       />
 
-      {obj.source.type === 'model' ? (
+      {obj.source.type === 'model' && (
         <label className="block space-y-1 text-xs">
           <span className="text-[11px] text-slate-400">Gazebo Model URI</span>
           <Input
@@ -186,7 +645,131 @@ export function WorldObjectInspector({ obj }: { obj: WorldObject }) {
             className="font-mono text-xs"
           />
         </label>
-      ) : (
+      )}
+
+      {obj.source.type === 'tree' && (
+        <div className="space-y-2.5 border-t border-[#222938] pt-3">
+          <div className="flex items-center justify-between">
+            <span className="flex items-center gap-1.5 text-xs font-semibold text-slate-200">
+              <Trees className="h-3.5 w-3.5 text-emerald-400" />
+              Tree Model Parameters
+            </span>
+            <select
+              aria-label="Tree style"
+              value={obj.source.style}
+              onChange={(e) => {
+                const nextStyle = e.target.value as 'deciduous' | 'pine';
+                updateWorldObject(obj.id, (draft) => {
+                  if (draft.source.type === 'tree') {
+                    draft.source.style = nextStyle;
+                  }
+                });
+              }}
+              className="h-6 rounded border border-[#2a3346] bg-[#0e121a] px-1.5 font-mono text-[11px] text-slate-200"
+            >
+              <option value="deciduous">Deciduous (Oak)</option>
+              <option value="pine">Pine (Conifer)</option>
+            </select>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <NumericField
+              id="tree-trunk-r"
+              label="Trunk Radius"
+              value={obj.source.trunkRadius}
+              unitMode="length"
+              unitSystem={units}
+              min={0.03}
+              onCommit={(val) =>
+                updateWorldObject(obj.id, (draft) => {
+                  if (draft.source.type === 'tree') draft.source.trunkRadius = val;
+                })
+              }
+            />
+            <NumericField
+              id="tree-trunk-h"
+              label="Trunk Height"
+              value={obj.source.trunkHeight}
+              unitMode="length"
+              unitSystem={units}
+              min={0.2}
+              onCommit={(val) =>
+                updateWorldObject(obj.id, (draft) => {
+                  if (draft.source.type === 'tree') draft.source.trunkHeight = val;
+                })
+              }
+            />
+            <NumericField
+              id="tree-canopy-r"
+              label="Canopy Radius"
+              value={obj.source.canopyRadius}
+              unitMode="length"
+              unitSystem={units}
+              min={0.15}
+              onCommit={(val) =>
+                updateWorldObject(obj.id, (draft) => {
+                  if (draft.source.type === 'tree') draft.source.canopyRadius = val;
+                })
+              }
+            />
+            <NumericField
+              id="tree-canopy-h"
+              label="Canopy Height"
+              value={obj.source.canopyHeight}
+              unitMode="length"
+              unitSystem={units}
+              min={0.3}
+              onCommit={(val) =>
+                updateWorldObject(obj.id, (draft) => {
+                  if (draft.source.type === 'tree') draft.source.canopyHeight = val;
+                })
+              }
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 pt-1 text-xs">
+            <label className="flex items-center justify-between gap-2 rounded border border-[#222938] bg-[#0e121a] px-2 py-1">
+              <span className="text-[11px] text-slate-400">Trunk</span>
+              <input
+                type="color"
+                aria-label="Tree trunk color"
+                value={rgbaToHex(obj.source.trunkColor ?? DEFAULT_TRUNK_COLOR)}
+                onChange={(e) => {
+                  const [r, g, b] = hexToRgbTuple(e.target.value);
+                  updateWorldObject(obj.id, (draft) => {
+                    if (draft.source.type === 'tree') {
+                      draft.source.trunkColor = [r, g, b, 1];
+                    }
+                  });
+                }}
+                className="h-5 w-7 cursor-pointer rounded border border-[#2a3346] bg-transparent p-0"
+              />
+            </label>
+            <label className="flex items-center justify-between gap-2 rounded border border-[#222938] bg-[#0e121a] px-2 py-1">
+              <span className="text-[11px] text-slate-400">Foliage</span>
+              <input
+                type="color"
+                aria-label="Tree foliage color"
+                value={rgbaToHex(
+                  obj.source.foliageColor ??
+                    (obj.source.style === 'pine' ? DEFAULT_PINE_COLOR : DEFAULT_DECIDUOUS_COLOR),
+                )}
+                onChange={(e) => {
+                  const [r, g, b] = hexToRgbTuple(e.target.value);
+                  updateWorldObject(obj.id, (draft) => {
+                    if (draft.source.type === 'tree') {
+                      draft.source.foliageColor = [r, g, b, 1];
+                    }
+                  });
+                }}
+                className="h-5 w-7 cursor-pointer rounded border border-[#2a3346] bg-transparent p-0"
+              />
+            </label>
+          </div>
+        </div>
+      )}
+
+      {obj.source.type === 'primitive' && (
         <div className="space-y-2 border-t border-[#222938] pt-3">
           <span className="text-xs font-semibold text-slate-200">
             Obstacle Geometry ({obj.source.shape.kind})
@@ -259,6 +842,87 @@ export function WorldObjectInspector({ obj }: { obj: WorldObject }) {
               />
             </div>
           )}
+          {obj.source.shape.kind === 'extrude' && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-[11px] text-slate-400">
+                <span>Polygon Footprint</span>
+                <span className="font-mono text-slate-300">
+                  {obj.source.shape.points.length} vertices
+                </span>
+              </div>
+              <NumericField
+                id="wobj-extrude-h"
+                label="Building Height"
+                value={obj.source.shape.depth}
+                unitMode="length"
+                unitSystem={units}
+                min={0.2}
+                step={0.5}
+                onCommit={(val) =>
+                  updateWorldObject(obj.id, (draft) => {
+                    if (draft.source.type === 'primitive' && draft.source.shape.kind === 'extrude') {
+                      const prevH = draft.source.shape.depth;
+                      draft.source.shape.depth = val;
+                      draft.pose.xyz[2] = Number((draft.pose.xyz[2] + (val - prevH) / 2).toFixed(4));
+                    }
+                  })
+                }
+              />
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                className="w-full"
+                onClick={() => setMapAnnotatorOpen(true)}
+              >
+                <MapIcon className="h-3.5 w-3.5" />
+                Edit in 2D Map Builder
+              </Button>
+            </div>
+          )}
+
+          <div className="flex items-center justify-between gap-2 pt-1 text-xs">
+            <span className="text-[11px] text-slate-400">Material Color</span>
+            <input
+              type="color"
+              aria-label="World object color"
+              value={rgbaToHex(obj.source.material.rgba)}
+              onChange={(e) => {
+                const [r, g, b] = hexToRgbTuple(e.target.value);
+                updateWorldObject(obj.id, (draft) => {
+                  if (draft.source.type === 'primitive') {
+                    draft.source.material.rgba = [r, g, b, draft.source.material.rgba[3]];
+                  }
+                });
+              }}
+              className="h-6 w-8 cursor-pointer rounded border border-[#2a3346] bg-transparent p-0"
+            />
+          </div>
+
+          <TexturePicker
+            idPrefix={`wobj-${obj.id}`}
+            textureId={obj.source.material.textureId}
+            textureRepeat={obj.source.material.textureRepeat}
+            onChangeTexture={(nextTexId) =>
+              updateWorldObject(obj.id, (draft) => {
+                if (draft.source.type === 'primitive') {
+                  if (nextTexId) {
+                    draft.source.material.textureId = nextTexId;
+                    draft.source.material.rgba = [1, 1, 1, draft.source.material.rgba[3]];
+                  } else {
+                    delete draft.source.material.textureId;
+                  }
+                }
+              })
+            }
+            onChangeRepeat={(rep) =>
+              updateWorldObject(obj.id, (draft) => {
+                if (draft.source.type === 'primitive') {
+                  draft.source.material.textureRepeat = rep;
+                }
+              })
+            }
+          />
         </div>
       )}
 

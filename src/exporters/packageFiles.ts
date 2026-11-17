@@ -39,7 +39,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 
 install(
-  DIRECTORY urdf sdf worlds launch config meshes scripts
+  DIRECTORY urdf sdf worlds launch config meshes materials scripts
   DESTINATION share/\${PROJECT_NAME}
 )
 

@@ -45,7 +45,7 @@ export function ViewportCameraRig({
   target = [0, 0, 0],
   controlsEnabled = true,
   minDistance = 0.2,
-  maxDistance = 40,
+  maxDistance = Infinity,
   orbitRef: externalOrbitRef,
 }: ViewportCameraRigProps) {
   const internalOrbitRef = useRef<ComponentRef<typeof OrbitControls>>(null);
@@ -99,10 +99,10 @@ export function ViewportCameraRig({
     if (projection === 'orthographic' && orthoRef.current) {
       const dist = Math.max(0.25, savedDistanceRef.current);
       const orthoZoom = Math.max(
-        10,
-        Math.min(1200, size.height / (2 * dist * TAN_HALF_FOV)),
+        0.005,
+        Math.min(2000, size.height / (2 * dist * TAN_HALF_FOV)),
       );
-      orthoRef.current.position.copy(tgt).addScaledVector(dir, Math.max(dist, 8));
+      orthoRef.current.position.copy(tgt).addScaledVector(dir, Math.max(dist, 25));
       orthoRef.current.zoom = orthoZoom;
       orthoRef.current.updateProjectionMatrix();
       if (orbitRef.current) {
@@ -112,9 +112,10 @@ export function ViewportCameraRig({
       invalidate();
     } else if (projection === 'perspective' && perspRef.current) {
       const currentZoom = orthoRef.current?.zoom ?? 180;
+      const rawEquiv = size.height / (2 * Math.max(0.005, currentZoom) * TAN_HALF_FOV);
       const equivDist = Math.max(
         minDistance,
-        Math.min(maxDistance, size.height / (2 * Math.max(10, currentZoom) * TAN_HALF_FOV)),
+        Number.isFinite(maxDistance) ? Math.min(maxDistance, rawEquiv) : rawEquiv,
       );
       savedDistanceRef.current = equivDist;
       perspRef.current.position.copy(tgt).addScaledVector(dir, equivDist);
@@ -149,7 +150,7 @@ export function ViewportCameraRig({
     const goalPos = goalTarget.clone().add(offset);
     const goalZoom =
       projection === 'orthographic'
-        ? Math.max(15, Math.min(1200, size.height / (2 * defaultDistance * TAN_HALF_FOV)))
+        ? Math.max(0.005, Math.min(2000, size.height / (2 * defaultDistance * TAN_HALF_FOV)))
         : undefined;
 
     if (soft) {
@@ -250,8 +251,8 @@ export function ViewportCameraRig({
           makeDefault
           position={initialPos}
           zoom={initialOrthoZoom}
-          near={-60}
-          far={160}
+          near={-10000}
+          far={50000}
         />
       ) : (
         <PerspectiveCamera
@@ -259,8 +260,8 @@ export function ViewportCameraRig({
           makeDefault
           position={initialPos}
           fov={FOV_DEG}
-          near={0.02}
-          far={160}
+          near={0.05}
+          far={50000}
         />
       )}
 
@@ -272,8 +273,8 @@ export function ViewportCameraRig({
         dampingFactor={0.08}
         minDistance={minDistance}
         maxDistance={maxDistance}
-        minZoom={8}
-        maxZoom={1500}
+        minZoom={0.005}
+        maxZoom={Infinity}
         onStart={() => {
           animGoalRef.current = null;
         }}

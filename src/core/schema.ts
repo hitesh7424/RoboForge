@@ -75,6 +75,8 @@ export const MaterialSchema = z.object({
     z.number().min(0).max(1),
     z.number().min(0).max(1),
   ]),
+  textureId: z.string().min(1).optional(),
+  textureRepeat: z.tuple([z.number().positive(), z.number().positive()]).optional(),
 });
 export type Material = z.infer<typeof MaterialSchema>;
 
@@ -284,6 +286,30 @@ export const WorldObjectSourceSchema = z.discriminatedUnion('type', [
     type: z.literal('model'),
     uri: z.string().min(1),
   }),
+  z.object({
+    type: z.literal('tree'),
+    style: z.enum(['deciduous', 'pine']),
+    trunkRadius: z.number().positive(),
+    trunkHeight: z.number().positive(),
+    canopyRadius: z.number().positive(),
+    canopyHeight: z.number().positive(),
+    trunkColor: z
+      .tuple([
+        z.number().min(0).max(1),
+        z.number().min(0).max(1),
+        z.number().min(0).max(1),
+        z.number().min(0).max(1),
+      ])
+      .optional(),
+    foliageColor: z
+      .tuple([
+        z.number().min(0).max(1),
+        z.number().min(0).max(1),
+        z.number().min(0).max(1),
+        z.number().min(0).max(1),
+      ])
+      .optional(),
+  }),
 ]);
 export type WorldObjectSource = z.infer<typeof WorldObjectSourceSchema>;
 
@@ -297,6 +323,29 @@ export const WorldObjectSchema = z.object({
 });
 export type WorldObject = z.infer<typeof WorldObjectSchema>;
 
+export const MapBackgroundSchema = z.object({
+  enabled: z.boolean(),
+  tileUrl: z.string().min(1),
+  latitude: z.number().min(-90).max(90),
+  longitude: z.number().min(-180).max(180),
+  elevation: z.number().finite(),
+  headingDeg: z.number().finite(),
+  zoom: z.number().int().min(1).max(21),
+  opacity: z.number().min(0.05).max(1),
+  landSizeMeters: z.number().min(10).max(5000).optional(),
+  elevationEnabled: z.boolean().optional(),
+  elevationSource: z.enum(['terrarium', 'custom_url', 'heightmap']).optional(),
+  elevationUrl: z.string().optional(),
+  elevationScale: z.number().min(0.1).max(20).optional(),
+  terrainSegments: z.number().int().min(4).max(96).optional(),
+  heightmapBase64: z.string().optional(),
+  heightmapMimeType: z.string().optional(),
+  heightmapMaxHeight: z.number().min(0.1).max(1000).optional(),
+  elevationGrid: z.array(z.number().finite()).optional(),
+  elevationGridSize: z.number().int().min(2).max(128).optional(),
+});
+export type MapBackground = z.infer<typeof MapBackgroundSchema>;
+
 export const WorldSchema = z.object({
   name: z.string().min(1),
   physics: z.object({
@@ -308,7 +357,10 @@ export const WorldSchema = z.object({
     enabled: z.boolean(),
     size: z.tuple([z.number().positive(), z.number().positive()]),
     friction: z.number().nonnegative(),
+    textureId: z.string().min(1).optional(),
+    textureRepeat: z.tuple([z.number().positive(), z.number().positive()]).optional(),
   }),
+  mapBackground: MapBackgroundSchema.optional(),
   robotSpawnPose: PoseSchema,
   lights: z.array(LightSchema),
   objects: z.array(WorldObjectSchema),
@@ -332,6 +384,16 @@ export const AssetSchema = z.object({
 });
 export type Asset = z.infer<typeof AssetSchema>;
 
+export const TextureAssetSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  format: z.enum(['png', 'jpg', 'webp']),
+  mimeType: z.string().min(1),
+  dataBase64: z.string(),
+  byteLength: z.number().int().nonnegative(),
+});
+export type TextureAsset = z.infer<typeof TextureAssetSchema>;
+
 export const TargetSchema = z.enum(['jazzy-harmonic', 'humble-fortress', 'lyrical-jetty']);
 export type TargetDistro = z.infer<typeof TargetSchema>;
 
@@ -350,6 +412,7 @@ export const ProjectSchema = z.object({
   world: WorldSchema,
   customParts: z.array(CustomPartSchema),
   assets: z.array(AssetSchema),
+  textures: z.array(TextureAssetSchema),
 });
 export type Project = z.infer<typeof ProjectSchema>;
 
@@ -372,11 +435,33 @@ export function migrateProject(raw: unknown): unknown {
   if (obj.version === undefined) {
     obj.version = 1;
   }
+  if (!Array.isArray(obj.textures)) {
+    obj.textures = [];
+  }
   // Future migrations keyed on version go here (e.g. if (obj.version === 1) -> v2).
   if (typeof obj.world === 'object' && obj.world !== null) {
     const world = { ...(obj.world as Record<string, unknown>) };
     if (!world.robotSpawnPose) {
       world.robotSpawnPose = { xyz: [0, 0, 0], rpy: [0, 0, 0] };
+    }
+    if (!world.mapBackground) {
+      world.mapBackground = {
+        enabled: true,
+        tileUrl: 'http://mt0.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
+        latitude: 37.422,
+        longitude: -122.0841,
+        elevation: 0,
+        headingDeg: 0,
+        zoom: 19,
+        opacity: 0.96,
+        landSizeMeters: 100,
+        elevationEnabled: true,
+        elevationSource: 'terrarium',
+        elevationUrl: 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png',
+        elevationScale: 1.0,
+        terrainSegments: 40,
+        heightmapMaxHeight: 25,
+      };
     }
     obj.world = world;
   }

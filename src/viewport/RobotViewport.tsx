@@ -127,6 +127,56 @@ function MountTriad({
   );
 }
 
+function CameraFrustumMarker({
+  fov,
+  aspect,
+  color,
+}: {
+  fov: number;
+  aspect: number;
+  color: string;
+}) {
+  const frustumGeo = useMemo(() => {
+    const depth = 0.22;
+    const clampedFov = Math.max(0.25, Math.min(2.6, fov));
+    const halfW = Math.tan(clampedFov / 2) * depth;
+    const halfH = halfW / Math.max(0.4, aspect);
+    // Apex at lens origin (0,0,0), flaring forward along ROS +X (+Y left, +Z up)
+    const pts = [
+      // Four rays from lens origin to image plane corners
+      0, 0, 0, depth, halfW, halfH,
+      0, 0, 0, depth, -halfW, halfH,
+      0, 0, 0, depth, -halfW, -halfH,
+      0, 0, 0, depth, halfW, -halfH,
+      // Image plane rectangle
+      depth, halfW, halfH, depth, -halfW, halfH,
+      depth, -halfW, halfH, depth, -halfW, -halfH,
+      depth, -halfW, -halfH, depth, halfW, -halfH,
+      depth, halfW, -halfH, depth, halfW, halfH,
+      // Top-up indicator chevron above +Z edge
+      depth, halfW * 0.35, halfH, depth, 0, halfH + 0.03,
+      depth, -halfW * 0.35, halfH, depth, 0, halfH + 0.03,
+    ];
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+    return geo;
+  }, [fov, aspect]);
+
+  useEffect(() => () => frustumGeo.dispose(), [frustumGeo]);
+
+  return (
+    <group>
+      <mesh>
+        <sphereGeometry args={[0.018, 10, 10]} />
+        <meshBasicMaterial color={color} />
+      </mesh>
+      <lineSegments geometry={frustumGeo}>
+        <lineBasicMaterial color={color} />
+      </lineSegments>
+    </group>
+  );
+}
+
 function SensorMarker({
   sensor,
   mount,
@@ -143,7 +193,13 @@ function SensorMarker({
     [mount?.pose],
   );
 
-  const color = selected ? '#facc15' : '#38bdf8';
+  const color = selected
+    ? '#facc15'
+    : sensor.kind === 'depth_camera'
+      ? '#c084fc'
+      : sensor.kind === 'camera'
+        ? '#f59e0b'
+        : '#38bdf8';
 
   return (
     <group
@@ -161,10 +217,11 @@ function SensorMarker({
         </mesh>
       )}
       {(sensor.kind === 'camera' || sensor.kind === 'depth_camera') && (
-        <mesh position={[0.09, 0, 0]} rotation={[0, 0, -Math.PI / 2]}>
-          <coneGeometry args={[0.075, 0.16, 4]} />
-          <meshBasicMaterial color={color} wireframe transparent opacity={0.75} />
-        </mesh>
+        <CameraFrustumMarker
+          fov={sensor.horizontalFov}
+          aspect={sensor.height > 0 ? sensor.width / sensor.height : 4 / 3}
+          color={color}
+        />
       )}
       {(sensor.kind === 'imu' || sensor.kind === 'gps') && (
         <mesh>
@@ -512,6 +569,7 @@ function RobotSceneContent({
                   geometry={link.visual.geometry}
                   material={link.visual.material}
                   assets={project.assets}
+                  textures={project.textures}
                   overrideColor={isLinkSelected ? '#60a5fa' : undefined}
                   overrideOpacity={
                     viewOverlay === 'visual' ? undefined : viewOverlay === 'collision' ? 0.16 : 0.25
@@ -903,7 +961,7 @@ export function RobotViewport() {
         <Canvas
           frameloop="demand"
           dpr={soft ? 1 : [1, 2]}
-          shadows={!soft}
+          shadows={soft ? false : 'percentage'}
           gl={{ antialias: !soft }}
           onPointerMissed={() => {
             if (!isTransformingRef.current && !wasPointerDragRef.current) {
