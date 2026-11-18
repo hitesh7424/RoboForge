@@ -1,8 +1,9 @@
 import { useRef, useState } from 'react';
-import { Globe, Map as MapIcon, MapPin, Mountain, Trash2, Trees, Upload } from 'lucide-react';
+import { Download, Globe, Map as MapIcon, MapPin, Mountain, Trash2, Trees, Upload } from 'lucide-react';
 import {
   computeElevationStats,
   DEFAULT_MAP_BACKGROUND,
+  downloadMapTilesTextureBase64,
   MAP_TILE_PRESETS,
   parseCoordinateInput,
   TERRARIUM_URL_DEFAULT,
@@ -43,6 +44,8 @@ function hexToRgbTuple(hex: string): [number, number, number] {
 export function WorldSettingsInspector({ world }: { world: World }) {
   const units = useRoboForgeStore((s) => s.units);
   const updateWorld = useRoboForgeStore((s) => s.updateWorld);
+  const setMapTileTexture = useRoboForgeStore((s) => s.setMapTileTexture);
+  const addLog = useRoboForgeStore((s) => s.addLog);
   const setMapAnnotatorOpen = useRoboForgeStore((s) => s.setMapAnnotatorOpen);
   const heightmapInputRef = useRef<HTMLInputElement | null>(null);
   const mapBg: NonNullable<World['mapBackground']> =
@@ -52,6 +55,7 @@ export function WorldSettingsInspector({ world }: { world: World }) {
     `${mapBg.latitude.toFixed(6)}, ${mapBg.longitude.toFixed(6)}`,
   );
   const [coordError, setCoordError] = useState(false);
+  const [downloadingMapTex, setDownloadingMapTex] = useState(false);
 
   const ensureMapBackground = (w: World) => {
     if (!w.mapBackground) {
@@ -580,6 +584,45 @@ export function WorldSettingsInspector({ world }: { world: World }) {
                 : 'Flat / Pending'}
             </span>
           </div>
+        </div>
+
+        <div className="flex items-center justify-between gap-2 rounded border border-[#222938] bg-[#0b0e14] px-2.5 py-1.5">
+          <div className="min-w-0">
+            <div className="font-mono text-[10px] text-slate-200 truncate">
+              materials/textures/{world.name}_map.png
+            </div>
+            <div className="text-[10px] text-slate-400">
+              {mapBg.mapTextureBase64
+                ? 'Downloaded & cached for ROS 2 ZIP export'
+                : 'Auto-downloads on viewport load or ZIP export'}
+            </div>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            disabled={downloadingMapTex}
+            onClick={async () => {
+              setDownloadingMapTex(true);
+              try {
+                const res = await downloadMapTilesTextureBase64(mapBg, 512);
+                if (res?.base64) {
+                  setMapTileTexture(res.base64);
+                  addLog(
+                    'info',
+                    `Downloaded map ground texture (${res.loadedCount}/${res.totalCount} tiles) to materials/textures/${world.name}_map.png.`,
+                  );
+                } else {
+                  addLog('warning', 'Map tile download returned fallback texture.');
+                }
+              } finally {
+                setDownloadingMapTex(false);
+              }
+            }}
+          >
+            <Download className="h-3.5 w-3.5" />
+            {downloadingMapTex ? 'Fetching...' : 'Download Tiles'}
+          </Button>
         </div>
 
         <Button

@@ -1,7 +1,11 @@
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
-import { computeElevationStats } from '@/core/mapTiles';
-import { encodeGrayscalePng } from '@/core/pngEncode';
+import { computeElevationStats, downloadMapTilesTextureBase64 } from '@/core/mapTiles';
+import {
+  createFallbackMapPng,
+  encodeGrayscalePng,
+  resampleDemToGazeboPixels,
+} from '@/core/pngEncode';
 import type { Project } from '@/core/schema';
 import { generateBridgeYaml } from '@/exporters/bridge';
 import { generateDisplayLaunchPy, generateSimLaunchPy } from '@/exporters/launch';
@@ -64,32 +68,29 @@ export function exportRos2Package(project: Project, overrideTarget?: TargetConfi
   const textures = project.textures ?? [];
   const mapBg = project.world.mapBackground;
   const elevStats = computeElevationStats(mapBg);
-  let hasDemTexture = false;
+  let hasGeneratedTextures = false;
 
-  if (
-    project.world.ground.enabled &&
-    mapBg?.enabled &&
-    elevStats.hasRelief &&
-    mapBg.elevationGrid &&
-    (mapBg.elevationGridSize ?? 0) >= 2
-  ) {
-    const n = mapBg.elevationGridSize!;
-    const scale = mapBg.elevationScale ?? 1;
-    const pixels = new Uint8Array(n * n);
-    for (let row = 0; row < n; row++) {
-      // PNG top row (row=0) corresponds to North (+Y -> grid row n-1)
-      const srcRow = n - 1 - row;
-      for (let col = 0; col < n; col++) {
-        const z = (mapBg.elevationGrid[srcRow * n + col] ?? 0) * scale;
-        const norm = (z - elevStats.minZ) / Math.max(0.01, elevStats.rangeZ);
-        pixels[row * n + col] = Math.max(0, Math.min(255, Math.round(norm * 255)));
-      }
-    }
-    files[`materials/textures/${worldName}_dem.png`] = encodeGrayscalePng(n, n, pixels);
-    hasDemTexture = true;
+  if (project.world.ground.enabled && mapBg?.enabled) {
+    // 1. Always export the georeferenced map tile ground texture (<world>_map.png)
+    const mapPngBytes = mapBg.mapTextureBase64
+      ? base64ToUint8Array(mapBg.mapTextureBase64)
+      : createFallbackMapPng(128, 128);
+    files[`materials/textures/${worldName}_map.png`] = mapPngBytes;
+    hasGeneratedTextures = true;
+
+    // 2. Always export a Gazebo-compliant (2^k + 1 = 65x65) grayscale DEM heightmap (<world>_dem.png)
+    const demPixels = resampleDemToGazeboPixels(
+      mapBg.elevationGrid,
+      mapBg.elevationGridSize ?? 2,
+      mapBg.elevationScale ?? 1,
+      elevStats.minZ,
+      elevStats.rangeZ,
+      65,
+    );
+    files[`materials/textures/${worldName}_dem.png`] = encodeGrayscalePng(65, 65, demPixels);
   }
 
-  if (textures.length === 0 && !hasDemTexture) {
+  if (textures.length === 0 && !hasGeneratedTextures) {
     files['materials/textures/.gitkeep'] = '';
   } else {
     for (const tex of textures) {
@@ -100,10 +101,33 @@ export function exportRos2Package(project: Project, overrideTarget?: TargetConfi
   return files;
 }
 
-export async function downloadRos2PackageZip(project: Project): Promise<string[]> {
-  const files = exportRos2Package(project);
+export async function downloadRos2PackageZip(
+  project: Project,
+  onMapTextureCaptured?: (base64: string) => void,
+): Promise<string[]> {
+  let projectToExport = project;
+  const mapBg = project.world.mapBackground;
+
+  if (project.world.ground.enabled && mapBg?.enabled && !mapBg.mapTextureBase64) {
+    const captured = await downloadMapTilesTextureBase64(mapBg, 512);
+    if (captured?.base64) {
+      onMapTextureCaptured?.(captured.base64);
+      projectToExport = {
+        ...project,
+        world: {
+          ...project.world,
+          mapBackground: {
+            ...mapBg,
+            mapTextureBase64: captured.base64,
+          },
+        },
+      };
+    }
+  }
+
+  const files = exportRos2Package(projectToExport);
   const zip = new JSZip();
-  const rootFolder = zip.folder(project.name);
+  const rootFolder = zip.folder(projectToExport.name);
   if (!rootFolder) {
     throw new Error('Failed to create zip package folder.');
   }
@@ -114,7 +138,7 @@ export async function downloadRos2PackageZip(project: Project): Promise<string[]
   }
 
   const blob = await zip.generateAsync({ type: 'blob' });
-  saveAs(blob, `${project.name}.zip`);
+  saveAs(blob, `${projectToExport.name}.zip`);
   return paths;
 }
 

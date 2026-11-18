@@ -200,11 +200,29 @@ describe('ROS 2 package exporters across Jazzy, Humble, and Lyrical targets', ()
     const files = exportRos2Package(project);
     const worldSdf = files['worlds/rover_arena.sdf'] as string;
     expect(worldSdf).toContain('<heightmap><uri>model://scout_rover_pkg/materials/textures/rover_arena_dem.png</uri><size>150 150 6</size><pos>0 0 -2</pos></heightmap>');
+    expect(worldSdf).toContain('<diffuse>model://scout_rover_pkg/materials/textures/rover_arena_map.png</diffuse>');
+    expect(worldSdf).toContain('<albedo_map>model://scout_rover_pkg/materials/textures/rover_arena_map.png</albedo_map>');
     expect(worldSdf).toContain('<polyline><point>-3 -2</point><point>3 -2</point><point>3 2</point><point>-3 2</point><height>12</height></polyline>');
 
-    const demBytes = files['materials/textures/rover_arena_dem.png'];
+    const demBytes = files['materials/textures/rover_arena_dem.png'] as Uint8Array;
     expect(demBytes).toBeInstanceOf(Uint8Array);
-    expect(Array.from((demBytes as Uint8Array).slice(0, 8))).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
+    expect(Array.from(demBytes.slice(0, 8))).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
+    // Verify Gazebo (2^k + 1) = 65x65 IHDR dimensions at bytes 16..23
+    const demView = new DataView(demBytes.buffer, demBytes.byteOffset, demBytes.byteLength);
+    expect(demView.getUint32(16, false)).toBe(65);
+    expect(demView.getUint32(20, false)).toBe(65);
+
+    const mapBytes = files['materials/textures/rover_arena_map.png'] as Uint8Array;
+    expect(mapBytes).toBeInstanceOf(Uint8Array);
+    expect(Array.from(mapBytes.slice(0, 8))).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
+
+    const simLaunch = files['launch/sim.launch.py'] as string;
+    expect(simLaunch).toContain("AppendEnvironmentVariable");
+    expect(simLaunch).toContain("name='GZ_SIM_RESOURCE_PATH'");
+    expect(simLaunch).toContain("name='IGN_GAZEBO_RESOURCE_PATH'");
+
+    const robotXacro = files['urdf/scout_rover.urdf.xacro'] as string;
+    expect(robotXacro).toContain('<link name="base_link_footprint"/>');
   });
 });
 

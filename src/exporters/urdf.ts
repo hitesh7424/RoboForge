@@ -247,6 +247,18 @@ export function generateRobotXacro(project: Project, target: TargetConfig): stri
     lines.push(`  </xacro:macro>`);
   }
 
+  // Root footprint link (massless KDL root so robot_state_publisher never warns on root link inertia)
+  const rootLink = linkMap.get(robot.rootLinkId) ?? robot.links[0];
+  if (rootLink) {
+    lines.push(``);
+    lines.push(`  <link name="${escapeXml(rootLink.name)}_footprint"/>`);
+    lines.push(`  <joint name="${escapeXml(rootLink.name)}_footprint_joint" type="fixed">`);
+    lines.push(`    <parent link="${escapeXml(rootLink.name)}_footprint"/>`);
+    lines.push(`    <child link="${escapeXml(rootLink.name)}"/>`);
+    lines.push(`    <origin xyz="0 0 0" rpy="0 0 0"/>`);
+    lines.push(`  </joint>`);
+  }
+
   // Links
   for (const link of robot.links) {
     lines.push(``);

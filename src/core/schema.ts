@@ -343,6 +343,7 @@ export const MapBackgroundSchema = z.object({
   heightmapMaxHeight: z.number().min(0.1).max(1000).optional(),
   elevationGrid: z.array(z.number().finite()).optional(),
   elevationGridSize: z.number().int().min(2).max(128).optional(),
+  mapTextureBase64: z.string().optional(),
 });
 export type MapBackground = z.infer<typeof MapBackgroundSchema>;
 

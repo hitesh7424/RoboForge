@@ -202,6 +202,7 @@ export interface RoboForgeState {
     gridSize?: number,
     centerElevation?: number,
   ) => void;
+  setMapTileTexture: (base64: string | undefined) => void;
   addWorldObject: (
     name: string,
     source: WorldObjectSource,
@@ -1098,7 +1099,30 @@ export const useRoboForgeStore = create<RoboForgeState>()(
 
       updateWorld: (updater) => {
         commitProject((project) => {
+          const prev = project.world.mapBackground
+            ? {
+                tileUrl: project.world.mapBackground.tileUrl,
+                latitude: project.world.mapBackground.latitude,
+                longitude: project.world.mapBackground.longitude,
+                zoom: project.world.mapBackground.zoom,
+                landSizeMeters: project.world.mapBackground.landSizeMeters,
+                headingDeg: project.world.mapBackground.headingDeg,
+              }
+            : null;
           updater(project.world);
+          const next = project.world.mapBackground;
+          if (
+            prev &&
+            next &&
+            (prev.tileUrl !== next.tileUrl ||
+              prev.latitude !== next.latitude ||
+              prev.longitude !== next.longitude ||
+              prev.zoom !== next.zoom ||
+              prev.landSizeMeters !== next.landSizeMeters ||
+              prev.headingDeg !== next.headingDeg)
+          ) {
+            next.mapTextureBase64 = undefined;
+          }
         });
       },
 
@@ -1113,6 +1137,15 @@ export const useRoboForgeStore = create<RoboForgeState>()(
           if (centerElevation !== undefined && Number.isFinite(centerElevation)) {
             m.elevation = centerElevation;
           }
+        });
+      },
+
+      setMapTileTexture: (base64) => {
+        set((state) => {
+          if (!state.project.world.mapBackground) {
+            state.project.world.mapBackground = { ...DEFAULT_MAP_BACKGROUND };
+          }
+          state.project.world.mapBackground.mapTextureBase64 = base64;
         });
       },
 

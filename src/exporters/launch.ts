@@ -11,7 +11,7 @@ export function generateSimLaunchPy(project: Project, target: TargetConfig): str
   return `import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription
+from launch.actions import AppendEnvironmentVariable, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command
 from launch_ros.actions import Node
@@ -19,11 +19,28 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     pkg_share = get_package_share_directory('${pkg}')
+    pkg_share_parent = os.path.dirname(pkg_share)
+    resource_paths = f'{pkg_share_parent}:{pkg_share}'
+
+    for env_key in ('GZ_SIM_RESOURCE_PATH', 'IGN_GAZEBO_RESOURCE_PATH', 'GAZEBO_MODEL_PATH'):
+        existing = os.environ.get(env_key, '')
+        os.environ[env_key] = f'{resource_paths}:{existing}' if existing else resource_paths
+
     xacro_file = os.path.join(pkg_share, 'urdf', '${robotName}.urdf.xacro')
     world_file = os.path.join(pkg_share, 'worlds', '${worldName}.sdf')
     bridge_config = os.path.join(pkg_share, 'config', 'bridge.yaml')
 
     robot_description = {'robot_description': Command(['xacro ', xacro_file])}
+
+    gz_resource_path = AppendEnvironmentVariable(
+        name='GZ_SIM_RESOURCE_PATH',
+        value=resource_paths,
+    )
+
+    ign_resource_path = AppendEnvironmentVariable(
+        name='IGN_GAZEBO_RESOURCE_PATH',
+        value=resource_paths,
+    )
 
     gz_sim = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -67,6 +84,8 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        gz_resource_path,
+        ign_resource_path,
         gz_sim,
         robot_state_publisher,
         spawn_robot,

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import Editor, { loader } from '@monaco-editor/react';
 import * as monaco from 'monaco-editor';
 import { AlertCircle, Check, CheckCircle2, Copy, Download, FileCode } from 'lucide-react';
+import { downloadMapTilesTextureBase64 } from '@/core/mapTiles';
 import { validateProject } from '@/core/schema';
 import { useRoboForgeStore } from '@/core/store';
 import { downloadRos2PackageZip, exportRos2Package } from '@/exporters';
@@ -30,10 +31,26 @@ export function ExportModal() {
   const project = useRoboForgeStore((s) => s.project);
   const isOpen = useRoboForgeStore((s) => s.isExportModalOpen);
   const setExportModalOpen = useRoboForgeStore((s) => s.setExportModalOpen);
+  const setMapTileTexture = useRoboForgeStore((s) => s.setMapTileTexture);
   const addLog = useRoboForgeStore((s) => s.addLog);
 
   const [selectedFile, setSelectedFile] = useState<string>('package.xml');
   const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const mapBg = project.world.mapBackground;
+    if (!project.world.ground.enabled || !mapBg?.enabled || mapBg.mapTextureBase64) return;
+
+    let cancelled = false;
+    void downloadMapTilesTextureBase64(mapBg, 512).then((res) => {
+      if (cancelled || !res?.base64) return;
+      setMapTileTexture(res.base64);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, project.world.ground.enabled, project.world.mapBackground, setMapTileTexture]);
 
   const files = useMemo(() => exportRos2Package(project), [project]);
   const textPaths = useMemo(
@@ -50,10 +67,13 @@ export function ExportModal() {
     }
   }, [files, selectedFile, textPaths]);
 
+  const selectedEntry = files[selectedFile];
   const activeContent =
-    typeof files[selectedFile] === 'string'
-      ? (files[selectedFile] as string)
-      : 'Binary mesh asset included in zip archive.';
+    typeof selectedEntry === 'string'
+      ? selectedEntry
+      : selectedEntry instanceof Uint8Array
+        ? `Binary package asset (${selectedFile}, ${selectedEntry.byteLength.toLocaleString()} bytes) bundled in ${project.name}.zip.`
+        : 'Binary asset included in zip archive.';
 
   const handleCopy = async () => {
     try {
@@ -67,7 +87,7 @@ export function ExportModal() {
 
   const handleDownloadZip = async () => {
     try {
-      const exportedPaths = await downloadRos2PackageZip(project);
+      const exportedPaths = await downloadRos2PackageZip(project, setMapTileTexture);
       addLog(
         'info',
         `Exported ROS 2 package "${project.name}.zip" (${exportedPaths.length} files for ${target.label}).`,

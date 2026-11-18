@@ -3,11 +3,13 @@ import { useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import {
   computeMapTileGridForExtent,
+  cropTileMosaicToGroundPngBase64,
   DEFAULT_MAP_BACKGROUND,
   formatTileUrl,
   type MapTileGridSpec,
 } from '@/core/mapTiles';
 import type { Project, TextureAsset } from '@/core/schema';
+import { useRoboForgeStore } from '@/core/store';
 import { buildTerrainBufferGeometry } from '@/core/terrain';
 import { getPineTierVisualRadius, getTreeParts, type TreeSource } from '@/core/treeGeometry';
 import { PrimitiveMesh, useTextureAsset } from '@/viewport/MeshAssetRenderer';
@@ -16,6 +18,8 @@ export function useMapTileMosaicTexture(
   enabled: boolean,
   tileUrl: string,
   tileGrid: MapTileGridSpec,
+  landSizeMeters = 100,
+  headingDeg = 0,
 ): THREE.CanvasTexture | null {
   const invalidate = useThree((s) => s.invalidate);
   const [texture, setTexture] = useState<THREE.CanvasTexture | null>(null);
@@ -59,6 +63,28 @@ export function useMapTileMosaicTexture(
     invalidate();
 
     let cancelled = false;
+    let exportTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+    const syncExportTexture = () => {
+      if (cancelled) return;
+      const b64 = cropTileMosaicToGroundPngBase64(
+        canvas,
+        tileGrid,
+        landSizeMeters,
+        headingDeg,
+        512,
+      );
+      if (b64) {
+        useRoboForgeStore.getState().setMapTileTexture(b64);
+      }
+    };
+
+    const scheduleSyncExportTexture = () => {
+      if (exportTimer !== null) {
+        globalThis.clearTimeout(exportTimer);
+      }
+      exportTimer = globalThis.setTimeout(syncExportTexture, 180);
+    };
+
     const upgradeMixed =
       typeof window !== 'undefined' && window.location.protocol === 'https:';
     const template = tileUrl.trim() || DEFAULT_MAP_BACKGROUND.tileUrl;
@@ -73,6 +99,7 @@ export function useMapTileMosaicTexture(
         ctx.drawImage(img, cell.col * tilePx, cell.row * tilePx, tilePx, tilePx);
         tex.needsUpdate = true;
         invalidate();
+        scheduleSyncExportTexture();
       };
       img.onerror = () => {
         // Retain coordinate tile fallback when CORS/offline blocks remote tile loading
@@ -82,9 +109,12 @@ export function useMapTileMosaicTexture(
 
     return () => {
       cancelled = true;
+      if (exportTimer !== null) {
+        globalThis.clearTimeout(exportTimer);
+      }
       tex.dispose();
     };
-  }, [enabled, tileUrl, tileGrid, invalidate]);
+  }, [enabled, tileUrl, tileGrid, landSizeMeters, headingDeg, invalidate]);
 
   return texture;
 }
@@ -135,6 +165,8 @@ export function WorldGroundTerrainMesh({
     mapEnabled,
     mapBackground?.tileUrl ?? DEFAULT_MAP_BACKGROUND.tileUrl,
     tileGrid,
+    landSize,
+    mapBackground?.headingDeg ?? 0,
   );
 
   const terrainGeo = useMemo(() => {

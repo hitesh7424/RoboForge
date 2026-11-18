@@ -7,6 +7,7 @@ import {
 } from 'react';
 import { Canvas, useThree } from '@react-three/fiber';
 import {
+  BrickWall,
   Building2,
   Check,
   Crosshair,
@@ -30,19 +31,22 @@ import {
 } from '@/core/mapTiles';
 import type { WorldObject } from '@/core/schema';
 import { useRoboForgeStore } from '@/core/store';
-import { createDefaultTreeSource } from '@/core/treeGeometry';
+import {
+  computeTreeDimensionsForCanopy,
+  createDefaultTreeSource,
+} from '@/core/treeGeometry';
 import { PrimitiveMesh } from '@/viewport/MeshAssetRenderer';
 import { ViewportCameraRig } from '@/viewport/ViewportCameraRig';
 import { TreeObjectVisual, WorldGroundTerrainMesh } from '@/viewport/WorldTerrainMesh';
 import { isSoftwareGlRenderer, StudioEnvironment } from '@/viewport/webglCaps';
 
-type AnnotatorTool = 'select' | 'tree' | 'building';
+type AnnotatorTool = 'select' | 'tree' | 'building' | 'wall';
 
 interface LiveChangeEntry {
   id: string;
   objectId: string;
   name: string;
-  kind: 'tree' | 'building';
+  kind: 'tree' | 'building' | 'wall';
   summary: string;
   timeLabel: string;
 }
@@ -215,6 +219,9 @@ export function MapAnnotatorModal() {
   const [presetTreeHeight, setPresetTreeHeight] = useState(3.2);
   const [buildingHeight, setBuildingHeight] = useState(6.0);
   const [buildingColor, setBuildingColor] = useState('#64748b');
+  const [wallHeight, setWallHeight] = useState(2.5);
+  const [wallThickness, setWallThickness] = useState(0.35);
+  const [wallColor, setWallColor] = useState('#94a3b8');
 
   // 2D Map viewport pan/zoom state
   const [viewCenter, setViewCenter] = useState<[number, number]>([0, 0]);
@@ -223,6 +230,7 @@ export function MapAnnotatorModal() {
 
   // Active drawing drafts
   const [draftPoly, setDraftPoly] = useState<[number, number][]>([]);
+  const [draftWall, setDraftWall] = useState<[number, number][]>([]);
   const [hoverRos, setHoverRos] = useState<[number, number] | null>(null);
   const [draftCircle, setDraftCircle] = useState<{
     cx: number;
@@ -289,6 +297,7 @@ export function MapAnnotatorModal() {
       fitLandView();
     } else {
       setDraftPoly([]);
+      setDraftWall([]);
       setDraftCircle(null);
     }
     // Only auto-fit when modal opens or landSize changes
@@ -365,7 +374,7 @@ export function MapAnnotatorModal() {
   );
 
   const pushLiveChange = useCallback(
-    (objectId: string, name: string, kind: 'tree' | 'building', summary: string) => {
+    (objectId: string, name: string, kind: 'tree' | 'building' | 'wall', summary: string) => {
       const timeLabel = new Date().toLocaleTimeString('en-US', { hour12: false });
       setLiveChanges((prev) => [
         {
@@ -384,22 +393,18 @@ export function MapAnnotatorModal() {
 
   const commitTreeAt = useCallback(
     (cx: number, cy: number, radiusM: number) => {
-      const r = Math.max(0.25, Number(radiusM.toFixed(2)));
       const terrainZ = sampleElevationAt(mapBg, cx, cy);
       const baseSource = createDefaultTreeSource(treeStyle);
-      const scaleH = Math.max(0.4, presetTreeHeight / 3.2);
-      const trunkH = Number((baseSource.trunkHeight * scaleH).toFixed(2));
-      const canopyH = Number(Math.max(0.5, presetTreeHeight - trunkH * 0.7).toFixed(2));
-      const trunkR = Number(Math.max(0.06, Math.min(r * 0.25, r * 0.16)).toFixed(2));
+      const dims = computeTreeDimensionsForCanopy(radiusM, presetTreeHeight, treeStyle);
 
       const created = addWorldObject(
         treeStyle === 'pine' ? 'map_pine' : 'map_tree',
         {
           ...baseSource,
-          canopyRadius: r,
-          trunkRadius: trunkR,
-          trunkHeight: trunkH,
-          canopyHeight: canopyH,
+          canopyRadius: dims.canopyRadius,
+          trunkRadius: dims.trunkRadius,
+          trunkHeight: dims.trunkHeight,
+          canopyHeight: dims.canopyHeight,
         },
         {
           xyz: [Number(cx.toFixed(3)), Number(cy.toFixed(3)), Number(terrainZ.toFixed(3))],
@@ -414,7 +419,7 @@ export function MapAnnotatorModal() {
         created.id,
         created.name,
         'tree',
-        `${treeStyle} r=${r}m @ (${cx.toFixed(1)}, ${cy.toFixed(1)}, z=${terrainZ.toFixed(1)})`,
+        `${treeStyle} r=${dims.canopyRadius}m trunk=${dims.trunkHeight}m @ (${cx.toFixed(1)}, ${cy.toFixed(1)}, z=${terrainZ.toFixed(1)})`,
       );
     },
     [mapBg, treeStyle, presetTreeHeight, addWorldObject, select, pushLiveChange],
@@ -476,6 +481,69 @@ export function MapAnnotatorModal() {
     [mapBg, buildingHeight, buildingColor, addWorldObject, select, pushLiveChange],
   );
 
+  const commitWallPolyline = useCallback(
+    (pts: [number, number][]) => {
+      if (pts.length < 2) return;
+      const h = Math.max(0.2, Number(wallHeight.toFixed(2)));
+      const t = Math.max(0.05, Number(wallThickness.toFixed(2)));
+      const rgba = hexToRgba(wallColor);
+      let lastCreatedId: string | null = null;
+
+      for (let i = 0; i < pts.length - 1; i++) {
+        const [x1, y1] = pts[i]!;
+        const [x2, y2] = pts[i + 1]!;
+        const dx = x2 - x1;
+        const dy = y2 - y1;
+        const segLen = Math.hypot(dx, dy);
+        if (segLen < 0.1) continue;
+
+        const mx = (x1 + x2) / 2;
+        const my = (y1 + y2) / 2;
+        const yaw = Math.atan2(dy, dx);
+        const len = Number((pts.length > 2 ? segLen + t * 0.45 : segLen).toFixed(3));
+        const terrainZ = sampleElevationAt(mapBg, mx, my);
+
+        const created = addWorldObject(
+          'map_wall',
+          {
+            type: 'primitive',
+            shape: {
+              kind: 'box',
+              size: [len, t, h],
+            },
+            material: {
+              name: 'wall_mat',
+              rgba,
+            },
+          },
+          {
+            xyz: [
+              Number(mx.toFixed(3)),
+              Number(my.toFixed(3)),
+              Number((terrainZ + h / 2).toFixed(3)),
+            ],
+            rpy: [0, 0, Number(yaw.toFixed(4))],
+          },
+          true,
+        );
+
+        lastCreatedId = created.id;
+        pushLiveChange(
+          created.id,
+          created.name,
+          'wall',
+          `L=${segLen.toFixed(1)}m h=${h}m t=${t}m @ (${mx.toFixed(1)}, ${my.toFixed(1)})`,
+        );
+      }
+
+      setDraftWall([]);
+      if (lastCreatedId) {
+        select({ type: 'worldObject', id: lastCreatedId });
+      }
+    },
+    [mapBg, wallHeight, wallThickness, wallColor, addWorldObject, select, pushLiveChange],
+  );
+
   // Keyboard shortcuts inside Map Annotator Modal
   useEffect(() => {
     if (!isOpen) return;
@@ -485,23 +553,30 @@ export function MapAnnotatorModal() {
       if (e.key === 'Escape') {
         if (draftPoly.length > 0) {
           setDraftPoly([]);
+        } else if (draftWall.length > 0) {
+          setDraftWall([]);
         } else {
           setOpen(false);
         }
       } else if (e.key === 'Enter' && tool === 'building' && draftPoly.length >= 3) {
         e.preventDefault();
         commitBuildingPolygon(draftPoly);
+      } else if (e.key === 'Enter' && tool === 'wall' && draftWall.length >= 2) {
+        e.preventDefault();
+        commitWallPolyline(draftWall);
       } else if (e.key.toLowerCase() === 'v') {
         setTool('select');
       } else if (e.key.toLowerCase() === 't') {
         setTool('tree');
       } else if (e.key.toLowerCase() === 'b') {
         setTool('building');
+      } else if (e.key.toLowerCase() === 'w') {
+        setTool('wall');
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isOpen, draftPoly, tool, commitBuildingPolygon, setOpen]);
+  }, [isOpen, draftPoly, draftWall, tool, commitBuildingPolygon, commitWallPolyline, setOpen]);
 
   // Draw the 2D Map Canvas
   useEffect(() => {
@@ -569,9 +644,13 @@ export function MapAnnotatorModal() {
     ctx.setLineDash([6, 4]);
     ctx.strokeRect(landLx, landTy, landPx, landPx);
     ctx.setLineDash([]);
-    ctx.fillStyle = 'rgba(16, 185, 129, 0.85)';
+    const landLabel = `Land Area: ${landSize}m × ${landSize}m`;
     ctx.font = '11px monospace';
-    ctx.fillText(`Land Area: ${landSize}m × ${landSize}m`, landLx + 6, landTy - 6);
+    const landTextW = ctx.measureText(landLabel).width;
+    ctx.fillStyle = 'rgba(11, 15, 22, 0.8)';
+    ctx.fillRect(landLx + 4, Math.max(4, landTy - 18), landTextW + 8, 15);
+    ctx.fillStyle = '#34d399';
+    ctx.fillText(landLabel, landLx + 8, Math.max(15, landTy - 7));
 
     // ROS Origin Axes (0,0)
     const [ox, oy] = rosToCanvas(0, 0);
@@ -601,7 +680,7 @@ export function MapAnnotatorModal() {
     ctx.fill();
     ctx.stroke();
 
-    // Existing World Objects (Buildings, Trees, Obstacles)
+    // Existing World Objects (Buildings, Walls, Trees, Obstacles)
     for (const obj of project.world.objects) {
       const isSelected = obj.id === selectedObjectId;
 
@@ -622,9 +701,12 @@ export function MapAnnotatorModal() {
 
         // Trunk center dot
         ctx.fillStyle = '#92400e';
+        ctx.strokeStyle = '#451a03';
+        ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.arc(tx, ty, Math.max(2.5, obj.source.trunkRadius * pxPerMeter), 0, Math.PI * 2);
+        ctx.arc(tx, ty, Math.max(3, obj.source.trunkRadius * pxPerMeter), 0, Math.PI * 2);
         ctx.fill();
+        ctx.stroke();
 
         if (isSelected) {
           // Radius resize handle on +X edge
@@ -637,9 +719,13 @@ export function MapAnnotatorModal() {
           ctx.stroke();
         }
 
-        ctx.fillStyle = '#e2e8f0';
         ctx.font = '10px monospace';
-        ctx.fillText(`${obj.name}`, tx + rPx + 4, ty + 3);
+        const lbl = `${obj.name} (${obj.source.trunkHeight.toFixed(1)}m)`;
+        const tw = ctx.measureText(lbl).width;
+        ctx.fillStyle = 'rgba(11, 15, 22, 0.72)';
+        ctx.fillRect(tx + rPx + 2, ty - 8, tw + 6, 13);
+        ctx.fillStyle = '#e2e8f0';
+        ctx.fillText(lbl, tx + rPx + 5, ty + 2);
       } else if (obj.source.type === 'primitive') {
         if (obj.source.shape.kind === 'extrude') {
           const poly = getWorldExtrudePolygon(obj);
@@ -659,19 +745,40 @@ export function MapAnnotatorModal() {
             ctx.stroke();
 
             const [cx, cy] = rosToCanvas(obj.pose.xyz[0], obj.pose.xyz[1]);
-            ctx.fillStyle = '#f8fafc';
+            const lbl = `${obj.name} (${obj.source.shape.depth}m)`;
             ctx.font = '10px monospace';
-            ctx.fillText(`${obj.name} (${obj.source.shape.depth}m)`, cx + 4, cy);
+            const tw = ctx.measureText(lbl).width;
+            ctx.fillStyle = 'rgba(11, 15, 22, 0.72)';
+            ctx.fillRect(cx + 2, cy - 9, tw + 6, 13);
+            ctx.fillStyle = '#f8fafc';
+            ctx.fillText(lbl, cx + 5, cy + 1);
           }
         } else if (obj.source.shape.kind === 'box') {
           const [bx, by] = rosToCanvas(obj.pose.xyz[0], obj.pose.xyz[1]);
           const bw = Math.max(4, obj.source.shape.size[0] * pxPerMeter);
           const bh = Math.max(4, obj.source.shape.size[1] * pxPerMeter);
-          ctx.fillStyle = isSelected ? 'rgba(56, 189, 248, 0.45)' : 'rgba(245, 158, 11, 0.35)';
+          const yaw = obj.pose.rpy[2] ?? 0;
+          const fillHex = rgbaToHex(obj.source.material.rgba);
+
+          ctx.save();
+          ctx.translate(bx, by);
+          ctx.rotate(-yaw);
+          ctx.fillStyle = isSelected ? 'rgba(56, 189, 248, 0.55)' : `${fillHex}bb`;
           ctx.strokeStyle = isSelected ? '#38bdf8' : '#fbbf24';
-          ctx.lineWidth = isSelected ? 2 : 1;
-          ctx.fillRect(bx - bw / 2, by - bh / 2, bw, bh);
-          ctx.strokeRect(bx - bw / 2, by - bh / 2, bw, bh);
+          ctx.lineWidth = isSelected ? 2.5 : 1.25;
+          ctx.fillRect(-bw / 2, -bh / 2, bw, bh);
+          ctx.strokeRect(-bw / 2, -bh / 2, bw, bh);
+          ctx.restore();
+
+          if (obj.name.includes('wall') || isSelected) {
+            const lbl = `${obj.name} (${obj.source.shape.size[2]}m)`;
+            ctx.font = '10px monospace';
+            const tw = ctx.measureText(lbl).width;
+            ctx.fillStyle = 'rgba(11, 15, 22, 0.72)';
+            ctx.fillRect(bx + 4, by - 14, tw + 6, 13);
+            ctx.fillStyle = '#fde68a';
+            ctx.fillText(lbl, bx + 7, by - 4);
+          }
         }
       }
     }
@@ -726,6 +833,47 @@ export function MapAnnotatorModal() {
       });
     }
 
+    // Active Draft Wall Polyline
+    if (tool === 'wall' && draftWall.length > 0) {
+      const previewPts = hoverRos ? [...draftWall, hoverRos] : draftWall;
+      ctx.strokeStyle = '#f59e0b';
+      ctx.lineWidth = Math.max(3, wallThickness * pxPerMeter);
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      previewPts.forEach(([vx, vy], i) => {
+        const [cx, cy] = rosToCanvas(vx, vy);
+        if (i === 0) ctx.moveTo(cx, cy);
+        else ctx.lineTo(cx, cy);
+      });
+      ctx.stroke();
+
+      // Segment length labels
+      ctx.font = '10px monospace';
+      for (let i = 0; i < previewPts.length - 1; i++) {
+        const [x1, y1] = previewPts[i]!;
+        const [x2, y2] = previewPts[i + 1]!;
+        const segLen = Math.hypot(x2 - x1, y2 - y1);
+        if (segLen < 0.2) continue;
+        const [mx, my] = rosToCanvas((x1 + x2) / 2, (y1 + y2) / 2);
+        const label = `${segLen.toFixed(1)}m`;
+        const tw = ctx.measureText(label).width;
+        ctx.fillStyle = 'rgba(11, 15, 22, 0.8)';
+        ctx.fillRect(mx - tw / 2 - 3, my - 16, tw + 6, 13);
+        ctx.fillStyle = '#fde68a';
+        ctx.fillText(label, mx - tw / 2, my - 6);
+      }
+
+      // Wall corners
+      draftWall.forEach(([vx, vy], i) => {
+        const [cx, cy] = rosToCanvas(vx, vy);
+        ctx.fillStyle = i === 0 ? '#facc15' : '#fbbf24';
+        ctx.beginPath();
+        ctx.arc(cx, cy, 4.5, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
+
     ctx.restore();
   }, [
     isOpen,
@@ -741,6 +889,8 @@ export function MapAnnotatorModal() {
     selectedObjectId,
     draftCircle,
     draftPoly,
+    draftWall,
+    wallThickness,
     hoverRos,
     tool,
     rosToCanvas,
@@ -770,12 +920,17 @@ export function MapAnnotatorModal() {
             return { obj };
           }
         } else if (obj.source.shape.kind === 'box') {
-          const hx = obj.source.shape.size[0] / 2;
-          const hy = obj.source.shape.size[1] / 2;
-          if (
-            Math.abs(rosX - obj.pose.xyz[0]) <= hx &&
-            Math.abs(rosY - obj.pose.xyz[1]) <= hy
-          ) {
+          const pad = Math.max(0.1, 6 / pxPerMeter);
+          const hx = obj.source.shape.size[0] / 2 + pad;
+          const hy = obj.source.shape.size[1] / 2 + pad;
+          const dx = rosX - obj.pose.xyz[0];
+          const dy = rosY - obj.pose.xyz[1];
+          const yaw = obj.pose.rpy[2] ?? 0;
+          const cos = Math.cos(-yaw);
+          const sin = Math.sin(-yaw);
+          const lx = dx * cos - dy * sin;
+          const ly = dx * sin + dy * cos;
+          if (Math.abs(lx) <= hx && Math.abs(ly) <= hy) {
             return { obj };
           }
         }
@@ -818,6 +973,11 @@ export function MapAnnotatorModal() {
         }
       }
       setDraftPoly((prev) => [...prev, [Number(rx.toFixed(3)), Number(ry.toFixed(3))]]);
+      return;
+    }
+
+    if (tool === 'wall') {
+      setDraftWall((prev) => [...prev, [Number(rx.toFixed(3)), Number(ry.toFixed(3))]]);
       return;
     }
 
@@ -884,18 +1044,21 @@ export function MapAnnotatorModal() {
           obj.pose.xyz[2] = Number(tz.toFixed(3));
         } else if (obj.source.type === 'primitive' && obj.source.shape.kind === 'extrude') {
           obj.pose.xyz[2] = Number((tz + obj.source.shape.depth / 2).toFixed(3));
+        } else if (obj.source.type === 'primitive' && obj.source.shape.kind === 'box') {
+          obj.pose.xyz[2] = Number((tz + obj.source.shape.size[2] / 2).toFixed(3));
         }
       });
     } else if (drag.type === 'resizeTree') {
       const obj = project.world.objects.find((o) => o.id === drag.objectId);
       if (!obj || obj.source.type !== 'tree') return;
-      const newRadius = Math.max(
-        0.25,
-        Number(Math.hypot(rx - obj.pose.xyz[0], ry - obj.pose.xyz[1]).toFixed(2)),
-      );
+      const newRadius = Math.max(0.25, Math.hypot(rx - obj.pose.xyz[0], ry - obj.pose.xyz[1]));
+      const dims = computeTreeDimensionsForCanopy(newRadius, presetTreeHeight, obj.source.style);
       updateWorldObject(drag.objectId, (draft) => {
         if (draft.source.type === 'tree') {
-          draft.source.canopyRadius = newRadius;
+          draft.source.canopyRadius = dims.canopyRadius;
+          draft.source.trunkRadius = dims.trunkRadius;
+          draft.source.trunkHeight = dims.trunkHeight;
+          draft.source.canopyHeight = dims.canopyHeight;
         }
       });
     }
@@ -934,6 +1097,12 @@ export function MapAnnotatorModal() {
   const buildingCount = project.world.objects.filter(
     (o) => o.source.type === 'primitive' && o.source.shape.kind === 'extrude',
   ).length;
+  const wallCount = project.world.objects.filter(
+    (o) =>
+      o.source.type === 'primitive' &&
+      o.source.shape.kind === 'box' &&
+      (o.name.toLowerCase().includes('wall') || o.static),
+  ).length;
   const selectedObj = project.world.objects.find((o) => o.id === selectedObjectId) ?? null;
 
   return (
@@ -963,6 +1132,7 @@ export function MapAnnotatorModal() {
                 onClick={() => {
                   setTool('select');
                   setDraftPoly([]);
+                  setDraftWall([]);
                 }}
                 className={`inline-flex h-7 items-center gap-1 rounded px-2 text-[11px] font-medium cursor-pointer ${
                   tool === 'select'
@@ -980,6 +1150,7 @@ export function MapAnnotatorModal() {
                 onClick={() => {
                   setTool('tree');
                   setDraftPoly([]);
+                  setDraftWall([]);
                 }}
                 className={`inline-flex h-7 items-center gap-1 rounded px-2 text-[11px] font-medium cursor-pointer ${
                   tool === 'tree'
@@ -994,7 +1165,10 @@ export function MapAnnotatorModal() {
                 type="button"
                 data-testid="map-tool-building"
                 aria-pressed={tool === 'building'}
-                onClick={() => setTool('building')}
+                onClick={() => {
+                  setTool('building');
+                  setDraftWall([]);
+                }}
                 className={`inline-flex h-7 items-center gap-1 rounded px-2 text-[11px] font-medium cursor-pointer ${
                   tool === 'building'
                     ? 'bg-sky-600 text-white'
@@ -1003,6 +1177,23 @@ export function MapAnnotatorModal() {
               >
                 <Building2 className="h-3.5 w-3.5" />
                 Building Polygon
+              </button>
+              <button
+                type="button"
+                data-testid="map-tool-wall"
+                aria-pressed={tool === 'wall'}
+                onClick={() => {
+                  setTool('wall');
+                  setDraftPoly([]);
+                }}
+                className={`inline-flex h-7 items-center gap-1 rounded px-2 text-[11px] font-medium cursor-pointer ${
+                  tool === 'wall'
+                    ? 'bg-amber-600 text-white'
+                    : 'text-slate-300 hover:bg-[#171d29]'
+                }`}
+              >
+                <BrickWall className="h-3.5 w-3.5" />
+                Wall
               </button>
             </div>
 
@@ -1095,6 +1286,68 @@ export function MapAnnotatorModal() {
                 )}
               </div>
             )}
+
+            {tool === 'wall' && (
+              <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-300">
+                <label className="flex items-center gap-1">
+                  <span className="text-slate-400">Height (m)</span>
+                  <input
+                    type="number"
+                    aria-label="Wall height meters"
+                    min={0.2}
+                    max={50}
+                    step={0.25}
+                    value={wallHeight}
+                    onChange={(e) => setWallHeight(Math.max(0.2, Number(e.target.value) || 2.5))}
+                    className="h-7 w-14 rounded border border-[#2a3346] bg-[#0b0e14] px-1.5 font-mono text-[11px]"
+                  />
+                </label>
+                <label className="flex items-center gap-1">
+                  <span className="text-slate-400">Thickness (m)</span>
+                  <input
+                    type="number"
+                    aria-label="Wall thickness meters"
+                    min={0.05}
+                    max={10}
+                    step={0.05}
+                    value={wallThickness}
+                    onChange={(e) => setWallThickness(Math.max(0.05, Number(e.target.value) || 0.35))}
+                    className="h-7 w-14 rounded border border-[#2a3346] bg-[#0b0e14] px-1.5 font-mono text-[11px]"
+                  />
+                </label>
+                <label className="flex items-center gap-1">
+                  <span className="text-slate-400">Color</span>
+                  <input
+                    type="color"
+                    aria-label="Wall color"
+                    value={wallColor}
+                    onChange={(e) => setWallColor(e.target.value)}
+                    className="h-6 w-7 cursor-pointer rounded border border-[#2a3346] bg-transparent p-0"
+                  />
+                </label>
+                {draftWall.length > 0 && (
+                  <>
+                    <button
+                      type="button"
+                      data-testid="finish-wall-btn"
+                      disabled={draftWall.length < 2}
+                      onClick={() => commitWallPolyline(draftWall)}
+                      className="inline-flex h-7 items-center gap-1 rounded bg-amber-600 px-2.5 text-[11px] font-medium text-white hover:bg-amber-500 disabled:opacity-40 cursor-pointer"
+                    >
+                      <Check className="h-3.5 w-3.5" />
+                      Finish Wall ({draftWall.length} pts)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDraftWall([])}
+                      className="inline-flex h-7 items-center gap-1 rounded border border-[#2a3346] bg-[#0b0e14] px-2 text-[11px] text-slate-300 hover:bg-[#1a202e] cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="flex items-center gap-1.5">
@@ -1140,6 +1393,8 @@ export function MapAnnotatorModal() {
                 onDoubleClick={() => {
                   if (tool === 'building' && draftPoly.length >= 3) {
                     commitBuildingPolygon(draftPoly);
+                  } else if (tool === 'wall' && draftWall.length >= 2) {
+                    commitWallPolyline(draftWall);
                   }
                 }}
                 onWheel={handleCanvasWheel}
@@ -1151,11 +1406,13 @@ export function MapAnnotatorModal() {
               {/* Top-left 2D Map Instructions */}
               <div className="pointer-events-none absolute top-2.5 left-2.5 rounded border border-[#232b3b] bg-[#0e121a]/90 px-2.5 py-1 text-[11px] text-slate-300">
                 {tool === 'tree' &&
-                  'Click or drag on the map to place a Tree Canopy Circle · Scroll to zoom'}
+                  'Click or drag on the map to place a Tree Canopy + Trunk · Scroll to zoom'}
                 {tool === 'building' &&
                   'Click corners to trace Building Polygon · Click yellow start dot, double-click, or press Enter to extrude'}
+                {tool === 'wall' &&
+                  'Click points along a path to trace Wall segments · Double-click, press Enter, or click Finish Wall'}
                 {tool === 'select' &&
-                  'Click tree/building to select · Drag to reposition · Drag blue handle to resize tree canopy'}
+                  'Click tree/building/wall to select · Drag to reposition · Drag blue handle to resize tree'}
               </div>
 
               {/* Bottom-left Coordinates + 2D Zoom Controls */}
@@ -1206,7 +1463,7 @@ export function MapAnnotatorModal() {
                   data-testid="map-live-counts"
                   className="font-mono text-[11px] text-slate-300"
                 >
-                  {treeCount} trees · {buildingCount} buildings
+                  {treeCount} trees · {buildingCount} buildings · {wallCount} walls
                 </span>
                 <button
                   type="button"
@@ -1244,7 +1501,7 @@ export function MapAnnotatorModal() {
             <div className="flex flex-1 flex-col min-h-0 overflow-hidden">
               {selectedObj && (
                 <div className="flex items-center justify-between gap-2 border-b border-[#222938] bg-[#131926] px-3 py-1.5 text-xs shrink-0">
-                  <div className="flex items-center gap-2 min-w-0">
+                  <div className="flex flex-wrap items-center gap-2 min-w-0">
                     <span className="font-mono font-semibold text-sky-300 truncate">
                       {selectedObj.name}
                     </span>
@@ -1280,34 +1537,123 @@ export function MapAnnotatorModal() {
                           />
                         </label>
                       )}
+                    {selectedObj.source.type === 'primitive' &&
+                      selectedObj.source.shape.kind === 'box' && (
+                        <>
+                          <label className="flex items-center gap-1 text-[11px] text-slate-300">
+                            <span>H:</span>
+                            <input
+                              type="number"
+                              aria-label="Selected wall height"
+                              min={0.2}
+                              max={50}
+                              step={0.25}
+                              value={selectedObj.source.shape.size[2]}
+                              onChange={(e) => {
+                                const nextH = Math.max(0.2, Number(e.target.value) || 1);
+                                updateWorldObject(selectedObj.id, (draft) => {
+                                  if (
+                                    draft.source.type === 'primitive' &&
+                                    draft.source.shape.kind === 'box'
+                                  ) {
+                                    const tz = sampleElevationAt(
+                                      mapBg,
+                                      draft.pose.xyz[0],
+                                      draft.pose.xyz[1],
+                                    );
+                                    draft.source.shape.size[2] = nextH;
+                                    draft.pose.xyz[2] = Number((tz + nextH / 2).toFixed(3));
+                                  }
+                                });
+                              }}
+                              className="h-6 w-14 rounded border border-[#2a3346] bg-[#0b0e14] px-1 font-mono text-[11px]"
+                            />
+                          </label>
+                          <label className="flex items-center gap-1 text-[11px] text-slate-300">
+                            <span>T:</span>
+                            <input
+                              type="number"
+                              aria-label="Selected wall thickness"
+                              min={0.05}
+                              max={10}
+                              step={0.05}
+                              value={selectedObj.source.shape.size[1]}
+                              onChange={(e) => {
+                                const nextT = Math.max(0.05, Number(e.target.value) || 0.35);
+                                updateWorldObject(selectedObj.id, (draft) => {
+                                  if (
+                                    draft.source.type === 'primitive' &&
+                                    draft.source.shape.kind === 'box'
+                                  ) {
+                                    draft.source.shape.size[1] = nextT;
+                                  }
+                                });
+                              }}
+                              className="h-6 w-14 rounded border border-[#2a3346] bg-[#0b0e14] px-1 font-mono text-[11px]"
+                            />
+                          </label>
+                        </>
+                      )}
                     {selectedObj.source.type === 'tree' && (
-                      <label className="flex items-center gap-1 text-[11px] text-slate-300">
-                        <span>R:</span>
-                        <input
-                          type="number"
-                          aria-label="Selected tree canopy radius"
-                          min={0.25}
-                          max={25}
-                          step={0.2}
-                          value={selectedObj.source.canopyRadius}
-                          onChange={(e) => {
-                            const nextR = Math.max(0.25, Number(e.target.value) || 1);
-                            updateWorldObject(selectedObj.id, (draft) => {
-                              if (draft.source.type === 'tree') {
-                                draft.source.canopyRadius = nextR;
-                              }
-                            });
-                          }}
-                          className="h-6 w-14 rounded border border-[#2a3346] bg-[#0b0e14] px-1 font-mono text-[11px]"
-                        />
-                      </label>
+                      <>
+                        <label className="flex items-center gap-1 text-[11px] text-slate-300">
+                          <span>R:</span>
+                          <input
+                            type="number"
+                            aria-label="Selected tree canopy radius"
+                            min={0.25}
+                            max={25}
+                            step={0.2}
+                            value={selectedObj.source.canopyRadius}
+                            onChange={(e) => {
+                              const nextR = Math.max(0.25, Number(e.target.value) || 1);
+                              const dims = computeTreeDimensionsForCanopy(
+                                nextR,
+                                presetTreeHeight,
+                                selectedObj.source.type === 'tree'
+                                  ? selectedObj.source.style
+                                  : 'deciduous',
+                              );
+                              updateWorldObject(selectedObj.id, (draft) => {
+                                if (draft.source.type === 'tree') {
+                                  draft.source.canopyRadius = dims.canopyRadius;
+                                  draft.source.trunkRadius = dims.trunkRadius;
+                                  draft.source.trunkHeight = dims.trunkHeight;
+                                  draft.source.canopyHeight = dims.canopyHeight;
+                                }
+                              });
+                            }}
+                            className="h-6 w-14 rounded border border-[#2a3346] bg-[#0b0e14] px-1 font-mono text-[11px]"
+                          />
+                        </label>
+                        <label className="flex items-center gap-1 text-[11px] text-slate-300">
+                          <span>Trunk:</span>
+                          <input
+                            type="number"
+                            aria-label="Selected tree trunk height"
+                            min={0.3}
+                            max={20}
+                            step={0.2}
+                            value={selectedObj.source.trunkHeight}
+                            onChange={(e) => {
+                              const nextTH = Math.max(0.3, Number(e.target.value) || 1);
+                              updateWorldObject(selectedObj.id, (draft) => {
+                                if (draft.source.type === 'tree') {
+                                  draft.source.trunkHeight = nextTH;
+                                }
+                              });
+                            }}
+                            className="h-6 w-14 rounded border border-[#2a3346] bg-[#0b0e14] px-1 font-mono text-[11px]"
+                          />
+                        </label>
+                      </>
                     )}
                   </div>
                   <button
                     type="button"
                     aria-label={`Delete ${selectedObj.name}`}
                     onClick={() => deleteWorldObject(selectedObj.id)}
-                    className="inline-flex h-6 items-center gap-1 rounded border border-red-800/60 bg-red-950/40 px-2 text-[11px] text-red-300 hover:bg-red-900/50 cursor-pointer"
+                    className="inline-flex h-6 items-center gap-1 rounded border border-red-800/60 bg-red-950/40 px-2 text-[11px] text-red-300 hover:bg-red-900/50 cursor-pointer shrink-0"
                   >
                     <Trash2 className="h-3 w-3" />
                     Delete
@@ -1328,7 +1674,7 @@ export function MapAnnotatorModal() {
               >
                 {liveChanges.length === 0 && project.world.objects.length === 0 ? (
                   <p className="p-2 text-xs text-slate-500">
-                    Draw a Tree Canopy Circle or Building Polygon on the 2D map to see 3D elements
+                    Draw a Tree Canopy, Building Polygon, or Wall on the 2D map to see 3D elements
                     generate live.
                   </p>
                 ) : (
@@ -1347,7 +1693,9 @@ export function MapAnnotatorModal() {
                             className={`rounded px-1 py-0.5 font-mono text-[9px] uppercase ${
                               entry.kind === 'tree'
                                 ? 'bg-emerald-900/60 text-emerald-300'
-                                : 'bg-sky-900/60 text-sky-300'
+                                : entry.kind === 'wall'
+                                  ? 'bg-amber-900/60 text-amber-300'
+                                  : 'bg-sky-900/60 text-sky-300'
                             }`}
                           >
                             {entry.kind}
@@ -1369,12 +1717,18 @@ export function MapAnnotatorModal() {
                       if (alreadyLogged) return null;
                       const isBldg =
                         obj.source.type === 'primitive' && obj.source.shape.kind === 'extrude';
+                      const isWall =
+                        obj.source.type === 'primitive' &&
+                        obj.source.shape.kind === 'box' &&
+                        (obj.name.toLowerCase().includes('wall') || obj.static);
                       const tag =
                         obj.source.type === 'tree'
                           ? 'tree'
                           : isBldg
                             ? 'building'
-                            : 'object';
+                            : isWall
+                              ? 'wall'
+                              : 'object';
                       return (
                         <div
                           key={obj.id}

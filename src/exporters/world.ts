@@ -117,7 +117,15 @@ export function generateWorldSdf(project: Project, target: TargetConfig): string
       Boolean(mapBg?.enabled) &&
       elevStats.hasRelief &&
       (mapBg?.elevationGridSize ?? 0) >= 2;
-    const groundPbr = renderPbrAlbedoXml(pkgName, textures, world.ground.textureId, '            ');
+    const customGroundTex = world.ground.textureId
+      ? textures.find((t) => t.id === world.ground.textureId)
+      : undefined;
+    const mapTileTexUri = mapBg?.enabled
+      ? `model://${escapeXml(pkgName)}/materials/textures/${escapeXml(world.name)}_map.png`
+      : undefined;
+    const activeGroundTexUri = customGroundTex
+      ? `model://${escapeXml(pkgName)}/materials/textures/${escapeXml(customGroundTex.name)}.${customGroundTex.format}`
+      : mapTileTexUri;
     const demUri = `model://${escapeXml(pkgName)}/materials/textures/${escapeXml(world.name)}_dem.png`;
 
     lines.push(``);
@@ -140,18 +148,23 @@ export function generateWorldSdf(project: Project, target: TargetConfig): string
     lines.push(`        </collision>`);
     lines.push(`        <visual name="visual">`);
     if (useHeightmap) {
+      const hmTexXml = activeGroundTexUri
+        ? `<use_terrain_paging>false</use_terrain_paging><texture><diffuse>${activeGroundTexUri}</diffuse><normal>${activeGroundTexUri}</normal><size>${fmt(landSize)}</size></texture>`
+        : '';
       lines.push(
-        `          <geometry><heightmap><uri>${demUri}</uri><size>${fmt(landSize)} ${fmt(landSize)} ${fmt(elevStats.rangeZ)}</size><pos>0 0 ${fmt(elevStats.minZ)}</pos></heightmap></geometry>`,
+        `          <geometry><heightmap>${hmTexXml}<uri>${demUri}</uri><size>${fmt(landSize)} ${fmt(landSize)} ${fmt(elevStats.rangeZ)}</size><pos>0 0 ${fmt(elevStats.minZ)}</pos></heightmap></geometry>`,
       );
     } else {
       lines.push(
         `          <geometry><plane><normal>0 0 1</normal><size>${fmt(gx)} ${fmt(gy)}</size></plane></geometry>`,
       );
     }
-    if (groundPbr.length > 0) {
+    if (activeGroundTexUri) {
       lines.push(`          <material>`);
       lines.push(`            <ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse>`);
-      lines.push(...groundPbr);
+      lines.push(
+        `            <pbr><metal><albedo_map>${activeGroundTexUri}</albedo_map></metal></pbr>`,
+      );
       lines.push(`          </material>`);
     } else {
       lines.push(

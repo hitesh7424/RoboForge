@@ -42,6 +42,31 @@ export function createDefaultTreeSource(style: 'deciduous' | 'pine' = 'deciduous
   };
 }
 
+export function computeTreeDimensionsForCanopy(
+  canopyRadiusM: number,
+  targetHeightM = 3.2,
+  style: 'deciduous' | 'pine' = 'deciduous',
+): {
+  canopyRadius: number;
+  trunkRadius: number;
+  trunkHeight: number;
+  canopyHeight: number;
+} {
+  const r = Math.max(0.25, Number(canopyRadiusM.toFixed(2)));
+  // Real trees with wide canopies also grow taller so trunk & crown stay proportional
+  const effectiveH = Math.max(1.2, targetHeightM, r * 2.1);
+  const trunkRatio = style === 'pine' ? 0.34 : 0.4;
+  const trunkH = Number(Math.max(0.45, effectiveH * trunkRatio).toFixed(2));
+  const canopyH = Number(Math.max(0.5, effectiveH * (1 - trunkRatio * 0.72)).toFixed(2));
+  const trunkR = Number(Math.max(0.08, Math.min(r * 0.25, r * 0.18)).toFixed(2));
+  return {
+    canopyRadius: r,
+    trunkRadius: trunkR,
+    trunkHeight: trunkH,
+    canopyHeight: canopyH,
+  };
+}
+
 /**
  * Decompose a parametric tree model into trunk + canopy parts in local ROS coordinates
  * with base of trunk at z = 0.
@@ -71,7 +96,8 @@ export function getTreeParts(tree: TreeSource): TreePartSpec[] {
   if (tree.style === 'pine') {
     const tierCount = 3;
     const tierHeight = canopyH * 0.48;
-    const baseZ = trunkH + tierHeight * 0.36;
+    // Keep bottom cone base well above ground so the brown trunk stays clearly visible
+    const baseZ = Math.max(trunkH * 0.78 + tierHeight * 0.5, trunkH + tierHeight * 0.36);
     const stepZ = (canopyH - tierHeight * 0.5) / tierCount;
 
     for (let i = 0; i < tierCount; i++) {
@@ -88,12 +114,11 @@ export function getTreeParts(tree: TreeSource): TreePartSpec[] {
         pose: { xyz: [0, 0, z], rpy: [0, 0, 0] },
         rgba: foliageColor,
       });
-      // Preserve cone base radius on the visual tier via cylinder shape convention?
-      // Store actual visual radius inside physicsShape? Keep cone bottom radius accessible via helper below.
     }
   } else {
     const mainR = Math.max(0.15, canopyR * 0.72);
-    const mainZ = trunkH + canopyH * 0.46;
+    // Keep lowest canopy sphere bottom at or above ~75% of trunk height so trunk is never buried
+    const mainZ = Math.max(trunkH * 0.75 + mainR, trunkH + canopyH * 0.46);
     parts.push({
       id: 'canopy_core',
       role: 'foliage',
@@ -106,6 +131,7 @@ export function getTreeParts(tree: TreeSource): TreePartSpec[] {
     const clusterR = Math.max(0.12, canopyR * 0.52);
     const radialOffset = canopyR * 0.42;
     const angles = [0, (2 * Math.PI) / 3, (4 * Math.PI) / 3];
+    const minLobeZ = trunkH * 0.7 + clusterR;
     angles.forEach((ang, idx) => {
       parts.push({
         id: `canopy_lobe_${idx}`,
@@ -116,7 +142,7 @@ export function getTreeParts(tree: TreeSource): TreePartSpec[] {
           xyz: [
             Math.cos(ang) * radialOffset,
             Math.sin(ang) * radialOffset,
-            mainZ - canopyH * 0.08 + idx * 0.04,
+            Math.max(minLobeZ, mainZ - canopyH * 0.08 + idx * 0.04),
           ],
           rpy: [0, 0, 0],
         },
@@ -129,7 +155,10 @@ export function getTreeParts(tree: TreeSource): TreePartSpec[] {
       role: 'foliage',
       physicsShape: { kind: 'sphere', radius: Math.max(0.12, canopyR * 0.56) },
       visualKind: 'sphere',
-      pose: { xyz: [0, 0, mainZ + canopyH * 0.25], rpy: [0, 0, 0] },
+      pose: {
+        xyz: [0, 0, mainZ + Math.max(canopyH * 0.25, mainR * 0.4)],
+        rpy: [0, 0, 0],
+      },
       rgba: foliageColor,
     });
   }

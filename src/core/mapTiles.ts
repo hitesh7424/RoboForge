@@ -321,3 +321,157 @@ export function parseCoordinateInput(raw: string): { lat: number; lon: number } 
   if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
   return { lat, lon };
 }
+
+/**
+ * Crop a rendered Web Mercator tile mosaic canvas to the exact `landSizeMeters x landSizeMeters`
+ * region centered at ROS ENU (0, 0) and return a PNG base64 string (without data: prefix).
+ */
+export function cropTileMosaicToGroundPngBase64(
+  mosaicCanvas: HTMLCanvasElement,
+  tileGrid: MapTileGridSpec,
+  landSizeMeters: number,
+  headingDeg = 0,
+  outSizePx = 512,
+): string | undefined {
+  if (typeof document === 'undefined') return undefined;
+  try {
+    const outCanvas = document.createElement('canvas');
+    outCanvas.width = outSizePx;
+    outCanvas.height = outSizePx;
+    const ctx = outCanvas.getContext('2d');
+    if (!ctx) return undefined;
+
+    const mosaicPx = mosaicCanvas.width;
+    const mosaicSpan = Math.max(0.1, tileGrid.planeSizeMeters);
+    const extent = Math.max(10, landSizeMeters);
+    const [eastOff, northOff] = tileGrid.centerOffsetEnu;
+
+    const u0 = 0.5 - eastOff / mosaicSpan;
+    const v0 = 0.5 - northOff / mosaicSpan;
+    const cx = u0 * mosaicPx;
+    const cy = (1 - v0) * mosaicPx;
+    const spanPx = Math.max(1, (extent / mosaicSpan) * mosaicPx);
+    const scale = outSizePx / spanPx;
+
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(0, 0, outSizePx, outSizePx);
+
+    ctx.save();
+    ctx.translate(outSizePx / 2, outSizePx / 2);
+    if (headingDeg !== 0) {
+      ctx.rotate((headingDeg * Math.PI) / 180);
+    }
+    ctx.scale(scale, scale);
+    ctx.drawImage(mosaicCanvas, -cx, -cy);
+    ctx.restore();
+
+    const dataUrl = outCanvas.toDataURL('image/png');
+    const commaIdx = dataUrl.indexOf(',');
+    return commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Download and stitch map tiles covering `landSizeMeters x landSizeMeters` around (latitude, longitude)
+ * into a georeferenced PNG base64 texture for Gazebo ground_plane / heightmap export.
+ */
+export async function downloadMapTilesTextureBase64(
+  mapBg: {
+    tileUrl?: string;
+    latitude?: number;
+    longitude?: number;
+    zoom?: number;
+    landSizeMeters?: number;
+    headingDeg?: number;
+  },
+  outSizePx = 512,
+): Promise<{ base64: string; loadedCount: number; totalCount: number } | null> {
+  if (typeof document === 'undefined' || typeof Image === 'undefined') {
+    return null;
+  }
+
+  const lat = mapBg.latitude ?? DEFAULT_MAP_BACKGROUND.latitude;
+  const lon = mapBg.longitude ?? DEFAULT_MAP_BACKGROUND.longitude;
+  const zoom = mapBg.zoom ?? DEFAULT_MAP_BACKGROUND.zoom;
+  const landSize = Math.max(10, mapBg.landSizeMeters ?? DEFAULT_MAP_BACKGROUND.landSizeMeters);
+  const headingDeg = mapBg.headingDeg ?? 0;
+  const template = (mapBg.tileUrl ?? '').trim() || DEFAULT_MAP_BACKGROUND.tileUrl;
+
+  const tileGrid = computeMapTileGridForExtent(lat, lon, zoom, landSize);
+  const tilePx = 256;
+  const sizePx = tileGrid.gridCount * tilePx;
+  const mosaicCanvas = document.createElement('canvas');
+  mosaicCanvas.width = sizePx;
+  mosaicCanvas.height = sizePx;
+  const ctx = mosaicCanvas.getContext('2d');
+  if (!ctx) return null;
+
+  // Draw coordinate grid base layer so even partial/offline tile loads produce a clean texture
+  ctx.fillStyle = '#0f172a';
+  ctx.fillRect(0, 0, sizePx, sizePx);
+  ctx.strokeStyle = 'rgba(56, 189, 248, 0.25)';
+  ctx.lineWidth = 1;
+  ctx.font = '11px monospace';
+  ctx.fillStyle = 'rgba(148, 163, 184, 0.65)';
+
+  for (const cell of tileGrid.cells) {
+    const px = cell.col * tilePx;
+    const py = cell.row * tilePx;
+    ctx.strokeRect(px, py, tilePx, tilePx);
+    ctx.fillText(`z${tileGrid.zoom} ${cell.tx},${cell.ty}`, px + 8, py + 18);
+  }
+
+  const upgradeMixed =
+    typeof window !== 'undefined' && window.location.protocol === 'https:';
+  let loadedCount = 0;
+
+  await Promise.all(
+    tileGrid.cells.map(
+      (cell) =>
+        new Promise<void>((resolve) => {
+          const url = formatTileUrl(template, cell.tx, cell.ty, tileGrid.zoom, upgradeMixed);
+          if (!url) {
+            resolve();
+            return;
+          }
+          const img = new Image();
+          img.crossOrigin = 'anonymous';
+          const timer = globalThis.setTimeout(() => {
+            resolve();
+          }, 5000);
+          img.onload = () => {
+            globalThis.clearTimeout(timer);
+            try {
+              ctx.drawImage(img, cell.col * tilePx, cell.row * tilePx, tilePx, tilePx);
+              loadedCount += 1;
+            } catch {
+              // ignore draw error
+            }
+            resolve();
+          };
+          img.onerror = () => {
+            globalThis.clearTimeout(timer);
+            resolve();
+          };
+          img.src = url;
+        }),
+    ),
+  );
+
+  const base64 = cropTileMosaicToGroundPngBase64(
+    mosaicCanvas,
+    tileGrid,
+    landSize,
+    headingDeg,
+    outSizePx,
+  );
+  if (!base64) return null;
+  return {
+    base64,
+    loadedCount,
+    totalCount: tileGrid.cells.length,
+  };
+}
+
