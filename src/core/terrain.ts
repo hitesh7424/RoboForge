@@ -242,6 +242,7 @@ export function buildTerrainBufferGeometry(
   elevationSource: ElevationQuerySource | undefined,
   tileGrid: MapTileGridSpec,
   segments = 40,
+  useNormalizedLandUv = false,
 ): THREE.BufferGeometry {
   const segs = Math.max(4, Math.min(96, Math.round(segments)));
   const extent = Math.max(10, landSizeMeters);
@@ -258,9 +259,13 @@ export function buildTerrainBufferGeometry(
     const vz = sampleElevationAt(elevationSource, vx, vy);
     posAttr.setZ(i, vz);
 
-    const u = 0.5 + (vx - eastOff) / mosaicSpan;
-    const v = 0.5 + (vy - northOff) / mosaicSpan;
-    uvAttr.setXY(i, u, v);
+    if (useNormalizedLandUv) {
+      uvAttr.setXY(i, 0.5 + vx / extent, 0.5 + vy / extent);
+    } else {
+      const u = 0.5 + (vx - eastOff) / mosaicSpan;
+      const v = 0.5 + (vy - northOff) / mosaicSpan;
+      uvAttr.setXY(i, u, v);
+    }
   }
 
   posAttr.needsUpdate = true;

@@ -86,24 +86,30 @@ export function exportRos2Package(project: Project, overrideTarget?: TargetConfi
     }
   }
 
-  if (project.world.ground.enabled && mapBg?.enabled) {
-    // 1. Always export the georeferenced map tile ground texture (<world>_map.png)
-    const mapPngBytes = mapBg.mapTextureBase64
+  const hasCosmeticMap = Boolean(
+    (project.world.surfaceZones ?? []).some((z) => z.visible) ||
+      project.world.cosmetics?.groundBasePresetId,
+  );
+  if (project.world.ground.enabled && (mapBg?.enabled || hasCosmeticMap)) {
+    // 1. Always export the georeferenced or painted multi-texture ground texture (<world>_map.png)
+    const mapPngBytes = mapBg?.mapTextureBase64
       ? base64ToUint8Array(mapBg.mapTextureBase64)
       : createFallbackMapPng(128, 128);
     files[`materials/textures/${worldName}_map.png`] = mapPngBytes;
     hasGeneratedTextures = true;
 
     // 2. Also bundle a Gazebo-compliant (2^k + 1 = 65x65) grayscale DEM reference (<world>_dem.png)
-    const demPixels = resampleDemToGazeboPixels(
-      mapBg.elevationGrid,
-      mapBg.elevationGridSize ?? 2,
-      mapBg.elevationScale ?? 1,
-      elevStats.minZ,
-      elevStats.rangeZ,
-      65,
-    );
-    files[`materials/textures/${worldName}_dem.png`] = encodeGrayscalePng(65, 65, demPixels);
+    if (mapBg?.enabled) {
+      const demPixels = resampleDemToGazeboPixels(
+        mapBg.elevationGrid,
+        mapBg.elevationGridSize ?? 2,
+        mapBg.elevationScale ?? 1,
+        elevStats.minZ,
+        elevStats.rangeZ,
+        65,
+      );
+      files[`materials/textures/${worldName}_dem.png`] = encodeGrayscalePng(65, 65, demPixels);
+    }
   }
 
   if (textures.length === 0 && !hasGeneratedTextures) {

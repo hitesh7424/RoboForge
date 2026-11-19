@@ -20,13 +20,16 @@ import type {
   Primitive,
   Project,
   Sensor,
+  SurfaceZone,
   TargetDistro,
   TextureAsset,
   Vec3,
   World,
+  WorldCosmetics,
   WorldObject,
   WorldObjectSource,
 } from '@/core/schema';
+import { DEFAULT_WORLD_COSMETICS } from '@/core/worldZones';
 import { createFourWheelRoverProject } from '@/core/templates';
 
 import {
@@ -35,7 +38,7 @@ import {
   type UnitPreferences,
 } from '@/core/units';
 
-export type WorkspaceMode = 'robot' | 'world' | 'preview';
+export type WorkspaceMode = 'robot' | 'world' | 'world_studio' | 'preview';
 export type PanelKey = 'left' | 'right' | 'bottom';
 export type UnitSystem = UnitPreferences;
 export type AutosaveStatus = 'idle' | 'saving' | 'saved' | 'error';
@@ -58,6 +61,7 @@ export type SelectionTarget =
   | { type: 'world' }
   | { type: 'worldObject'; id: string }
   | { type: 'worldLight'; id: string }
+  | { type: 'surfaceZone'; id: string }
   | null;
 
 export interface PendingJointAttach {
@@ -216,6 +220,14 @@ export interface RoboForgeState {
   updateWorldLight: (lightId: string, updater: (light: Light) => void) => void;
   deleteWorldLight: (lightId: string) => void;
 
+  // World Studio Surface Zones & Cosmetics
+  addSurfaceZone: (zone: Omit<SurfaceZone, 'id' | 'name'> & { name?: string }) => SurfaceZone;
+  updateSurfaceZone: (zoneId: string, updater: (zone: SurfaceZone) => void) => void;
+  deleteSurfaceZone: (zoneId: string) => void;
+  duplicateSurfaceZone: (zoneId: string) => SurfaceZone | null;
+  reorderSurfaceZone: (zoneId: string, direction: 'up' | 'down') => void;
+  updateWorldCosmetics: (updater: (cosmetics: WorldCosmetics) => void) => void;
+
   // Custom Parts, Mesh Assets & Textures
   saveCustomPart: (part: CustomPart) => void;
   deleteCustomPart: (partId: string) => void;
@@ -290,6 +302,11 @@ export const useRoboForgeStore = create<RoboForgeState>()(
         !project.world.objects.some((o) => o.id === sel.id)
       ) {
         state.selection = { type: 'world' };
+      } else if (
+        sel.type === 'surfaceZone' &&
+        !(project.world.surfaceZones ?? []).some((z) => z.id === sel.id)
+      ) {
+        state.selection = { type: 'world' };
       }
     };
 
@@ -362,7 +379,12 @@ export const useRoboForgeStore = create<RoboForgeState>()(
       setMode: (mode) =>
         set((state) => {
           state.mode = mode;
-          if (mode === 'world' && state.selection?.type !== 'worldObject') {
+          if (
+            (mode === 'world' || mode === 'world_studio') &&
+            state.selection?.type !== 'worldObject' &&
+            state.selection?.type !== 'surfaceZone' &&
+            state.selection?.type !== 'worldLight'
+          ) {
             state.selection = { type: 'world' };
           }
         }),
@@ -1163,7 +1185,9 @@ export const useRoboForgeStore = create<RoboForgeState>()(
           project.world.objects.push(obj);
         });
         set((s) => {
-          s.mode = 'world';
+          if (s.mode !== 'world_studio') {
+            s.mode = 'world';
+          }
           s.selection = { type: 'worldObject', id: obj.id };
           s.logs.unshift(makeLog('info', `Placed world object "${obj.name}".`));
         });
@@ -1226,6 +1250,96 @@ export const useRoboForgeStore = create<RoboForgeState>()(
         });
       },
 
+      addSurfaceZone: (zoneInput) => {
+        const existingNames = new Set((get().project.world.surfaceZones ?? []).map((z) => z.name));
+        const defaultBase =
+          zoneInput.kind === 'path'
+            ? 'road_path'
+            : zoneInput.kind === 'circle'
+              ? 'circle_zone'
+              : zoneInput.kind === 'polygon'
+                ? 'poly_zone'
+                : 'rect_zone';
+        const zone: SurfaceZone = {
+          ...zoneInput,
+          id: createId(),
+          name: sanitizeUniqueName(zoneInput.name ?? defaultBase, existingNames),
+        };
+        commitProject((project) => {
+          if (!project.world.surfaceZones) {
+            project.world.surfaceZones = [];
+          }
+          project.world.surfaceZones.push(zone);
+        });
+        set((s) => {
+          s.selection = { type: 'surfaceZone', id: zone.id };
+          s.logs.unshift(makeLog('info', `Added textured map zone "${zone.name}".`));
+        });
+        return zone;
+      },
+
+      updateSurfaceZone: (zoneId, updater) => {
+        commitProject((project) => {
+          const zone = (project.world.surfaceZones ?? []).find((z) => z.id === zoneId);
+          if (zone) updater(zone);
+        });
+      },
+
+      deleteSurfaceZone: (zoneId) => {
+        commitProject((project) => {
+          if (!project.world.surfaceZones) return;
+          project.world.surfaceZones = project.world.surfaceZones.filter((z) => z.id !== zoneId);
+        });
+        set((state) => {
+          if (state.selection?.type === 'surfaceZone' && state.selection.id === zoneId) {
+            state.selection = { type: 'world' };
+          }
+        });
+      },
+
+      duplicateSurfaceZone: (zoneId) => {
+        const zones = get().project.world.surfaceZones ?? [];
+        const src = zones.find((z) => z.id === zoneId);
+        if (!src) return null;
+        const existingNames = new Set(zones.map((z) => z.name));
+        const copy: SurfaceZone = {
+          ...structuredClone(src),
+          id: createId(),
+          name: sanitizeUniqueName(`${src.name}_copy`, existingNames),
+          points: src.points.map(([x, y]) => [Number((x + 2).toFixed(3)), Number((y + 2).toFixed(3))]),
+        };
+        commitProject((project) => {
+          if (!project.world.surfaceZones) project.world.surfaceZones = [];
+          project.world.surfaceZones.push(copy);
+        });
+        set((s) => {
+          s.selection = { type: 'surfaceZone', id: copy.id };
+        });
+        return copy;
+      },
+
+      reorderSurfaceZone: (zoneId, direction) => {
+        commitProject((project) => {
+          const zones = project.world.surfaceZones;
+          if (!zones || zones.length < 2) return;
+          const idx = zones.findIndex((z) => z.id === zoneId);
+          if (idx < 0) return;
+          const targetIdx = direction === 'up' ? idx + 1 : idx - 1;
+          if (targetIdx < 0 || targetIdx >= zones.length) return;
+          const [moved] = zones.splice(idx, 1);
+          if (moved) zones.splice(targetIdx, 0, moved);
+        });
+      },
+
+      updateWorldCosmetics: (updater) => {
+        commitProject((project) => {
+          if (!project.world.cosmetics) {
+            project.world.cosmetics = { ...DEFAULT_WORLD_COSMETICS };
+          }
+          updater(project.world.cosmetics);
+        });
+      },
+
       saveCustomPart: (part) => {
         commitProject((project) => {
           const idx = project.customParts.findIndex((p) => p.id === part.id);
@@ -1272,6 +1386,13 @@ export const useRoboForgeStore = create<RoboForgeState>()(
           for (const obj of project.world.objects) {
             if (obj.source.type === 'primitive' && obj.source.material.textureId === textureId) {
               delete obj.source.material.textureId;
+            }
+          }
+          for (const zone of project.world.surfaceZones ?? []) {
+            if (zone.textureId === textureId) {
+              delete zone.textureId;
+              zone.textureSource = 'preset';
+              zone.presetId = zone.presetId ?? 'concrete_clean';
             }
           }
         });

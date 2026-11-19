@@ -347,6 +347,42 @@ export const MapBackgroundSchema = z.object({
 });
 export type MapBackground = z.infer<typeof MapBackgroundSchema>;
 
+export const SurfaceZoneSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  kind: z.enum(['rect', 'polygon', 'circle', 'path']),
+  points: z.array(z.tuple([z.number().finite(), z.number().finite()])),
+  radius: z.number().positive().optional(),
+  strokeWidth: z.number().positive().optional(),
+  textureSource: z.enum(['preset', 'custom', 'solid']),
+  presetId: z.string().min(1).optional(),
+  textureId: z.string().min(1).optional(),
+  tint: z.tuple([
+    z.number().min(0).max(1),
+    z.number().min(0).max(1),
+    z.number().min(0).max(1),
+    z.number().min(0).max(1),
+  ]),
+  repeat: z.tuple([z.number().positive(), z.number().positive()]),
+  opacity: z.number().min(0).max(1),
+  visible: z.boolean(),
+  roughness: z.number().min(0).max(1).optional(),
+  feather: z.number().min(0).max(4).optional(),
+});
+export type SurfaceZone = z.infer<typeof SurfaceZoneSchema>;
+
+export const WorldCosmeticsSchema = z.object({
+  skyPreset: z.enum(['daylight', 'golden_hour', 'overcast', 'dusk', 'night', 'studio']),
+  fogEnabled: z.boolean(),
+  fogDensity: z.number().min(0).max(0.05),
+  groundBasePresetId: z.string().optional(),
+  groundBaseRepeat: z.tuple([z.number().positive(), z.number().positive()]).optional(),
+  ambientIntensity: z.number().min(0).max(3).optional(),
+  sunAzimuthDeg: z.number().finite().optional(),
+  sunElevationDeg: z.number().min(2).max(89).optional(),
+});
+export type WorldCosmetics = z.infer<typeof WorldCosmeticsSchema>;
+
 export const WorldSchema = z.object({
   name: z.string().min(1),
   physics: z.object({
@@ -362,6 +398,8 @@ export const WorldSchema = z.object({
     textureRepeat: z.tuple([z.number().positive(), z.number().positive()]).optional(),
   }),
   mapBackground: MapBackgroundSchema.optional(),
+  surfaceZones: z.array(SurfaceZoneSchema).optional(),
+  cosmetics: WorldCosmeticsSchema.optional(),
   robotSpawnPose: PoseSchema,
   lights: z.array(LightSchema),
   objects: z.array(WorldObjectSchema),

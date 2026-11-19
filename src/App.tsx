@@ -17,6 +17,7 @@ import { TopBar } from '@/ui/TopBar';
 import { ValidationPanel } from '@/ui/ValidationPanel';
 import { RobotViewport } from '@/viewport/RobotViewport';
 import { UrdfPreviewViewport } from '@/viewport/UrdfPreviewViewport';
+import { WorldStudioPage } from '@/worldStudio/WorldStudioPage';
 
 export default function App() {
   const project = useRoboForgeStore((s) => s.project);
@@ -190,7 +191,10 @@ export default function App() {
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-[#0c0f14] text-slate-100">
       <TopBar />
 
-      <div className="relative flex-1 min-h-0">
+      {mode === 'world_studio' ? (
+        <WorldStudioPage />
+      ) : (
+        <div className="relative flex-1 min-h-0">
         <Group orientation="vertical" id="roboforge-root-vertical">
           <Panel id="workspace-main" defaultSize="78%" minSize="50%">
             <Group orientation="horizontal" id="roboforge-main-horizontal">
@@ -322,6 +326,7 @@ export default function App() {
           </Panel>
         </Group>
       </div>
+      )}
 
       <ProjectModal />
       <ExportModal />

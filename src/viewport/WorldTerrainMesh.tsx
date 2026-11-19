@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { useThree } from '@react-three/fiber';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useThree, type ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
 import {
   computeMapTileGridForExtent,
@@ -8,10 +8,15 @@ import {
   formatTileUrl,
   type MapTileGridSpec,
 } from '@/core/mapTiles';
-import type { Project, TextureAsset } from '@/core/schema';
+import type { Project, SurfaceZone, TextureAsset, World, WorldCosmetics } from '@/core/schema';
 import { useRoboForgeStore } from '@/core/store';
 import { buildTerrainBufferGeometry } from '@/core/terrain';
 import { getPineTierVisualRadius, getTreeParts, type TreeSource } from '@/core/treeGeometry';
+import {
+  exportCompositeGroundPngBase64,
+  hasCustomCosmeticGround,
+  renderCompositeGroundCanvas,
+} from '@/core/worldTextureCompositor';
 import { PrimitiveMesh, useTextureAsset } from '@/viewport/MeshAssetRenderer';
 
 export function useMapTileMosaicTexture(
@@ -20,13 +25,17 @@ export function useMapTileMosaicTexture(
   tileGrid: MapTileGridSpec,
   landSizeMeters = 100,
   headingDeg = 0,
-): THREE.CanvasTexture | null {
+  skipAutoSync = false,
+): { texture: THREE.CanvasTexture | null; canvas: HTMLCanvasElement | null; revision: number } {
   const invalidate = useThree((s) => s.invalidate);
   const [texture, setTexture] = useState<THREE.CanvasTexture | null>(null);
+  const [canvasEl, setCanvasEl] = useState<HTMLCanvasElement | null>(null);
+  const [revision, setRevision] = useState(0);
 
   useEffect(() => {
     if (!enabled) {
       setTexture(null);
+      setCanvasEl(null);
       return;
     }
 
@@ -60,12 +69,14 @@ export function useMapTileMosaicTexture(
     tex.anisotropy = 4;
     tex.needsUpdate = true;
     setTexture(tex);
+    setCanvasEl(canvas);
+    setRevision((r) => r + 1);
     invalidate();
 
     let cancelled = false;
     let exportTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
     const syncExportTexture = () => {
-      if (cancelled) return;
+      if (cancelled || skipAutoSync) return;
       const b64 = cropTileMosaicToGroundPngBase64(
         canvas,
         tileGrid,
@@ -79,6 +90,7 @@ export function useMapTileMosaicTexture(
     };
 
     const scheduleSyncExportTexture = () => {
+      if (skipAutoSync) return;
       if (exportTimer !== null) {
         globalThis.clearTimeout(exportTimer);
       }
@@ -98,6 +110,7 @@ export function useMapTileMosaicTexture(
         if (cancelled) return;
         ctx.drawImage(img, cell.col * tilePx, cell.row * tilePx, tilePx, tilePx);
         tex.needsUpdate = true;
+        setRevision((r) => r + 1);
         invalidate();
         scheduleSyncExportTexture();
       };
@@ -114,26 +127,37 @@ export function useMapTileMosaicTexture(
       }
       tex.dispose();
     };
-  }, [enabled, tileUrl, tileGrid, landSizeMeters, headingDeg, invalidate]);
+  }, [enabled, tileUrl, tileGrid, landSizeMeters, headingDeg, skipAutoSync, invalidate]);
 
-  return texture;
+  return { texture, canvas: canvasEl, revision };
 }
 
 export function WorldGroundTerrainMesh({
   ground,
   mapBackground,
+  surfaceZones,
+  cosmetics,
   textures,
   soft,
   isEditingWorld,
   onSelectWorld,
+  onGroundPointerDown,
+  onGroundPointerMove,
+  onGroundPointerUp,
 }: {
   ground: Project['world']['ground'];
   mapBackground?: Project['world']['mapBackground'];
+  surfaceZones?: SurfaceZone[];
+  cosmetics?: WorldCosmetics;
   textures: TextureAsset[];
   soft: boolean;
   isEditingWorld?: boolean;
   onSelectWorld?: () => void;
+  onGroundPointerDown?: (e: ThreeEvent<PointerEvent>) => void;
+  onGroundPointerMove?: (e: ThreeEvent<PointerEvent>) => void;
+  onGroundPointerUp?: (e: ThreeEvent<PointerEvent>) => void;
 }) {
+  const invalidate = useThree((s) => s.invalidate);
   const assignedTexture = useMemo(
     () => (ground.textureId ? textures.find((t) => t.id === ground.textureId) : undefined),
     [ground.textureId, textures],
@@ -143,11 +167,33 @@ export function WorldGroundTerrainMesh({
   const mapEnabled = Boolean(mapBackground?.enabled);
   const landSize = Math.max(
     10,
-    mapBackground?.landSizeMeters ?? DEFAULT_MAP_BACKGROUND.landSizeMeters,
+    mapEnabled
+      ? (mapBackground?.landSizeMeters ?? DEFAULT_MAP_BACKGROUND.landSizeMeters)
+      : Math.max(ground.size[0], ground.size[1]),
   );
   const segments = Math.max(
     4,
     Math.min(96, Math.round(mapBackground?.terrainSegments ?? DEFAULT_MAP_BACKGROUND.terrainSegments)),
+  );
+
+  const syntheticWorld = useMemo(
+    (): World => ({
+      name: 'world',
+      physics: { stepSize: 0.002, realTimeFactor: 1, gravity: [0, 0, -9.81] },
+      ground,
+      mapBackground,
+      surfaceZones,
+      cosmetics,
+      robotSpawnPose: { xyz: [0, 0, 0], rpy: [0, 0, 0] },
+      lights: [],
+      objects: [],
+    }),
+    [ground, mapBackground, surfaceZones, cosmetics],
+  );
+
+  const useCompositedGround = useMemo(
+    () => hasCustomCosmeticGround(syntheticWorld),
+    [syntheticWorld],
   );
 
   const tileGrid = useMemo(
@@ -161,19 +207,120 @@ export function WorldGroundTerrainMesh({
     [mapBackground?.latitude, mapBackground?.longitude, mapBackground?.zoom, landSize],
   );
 
-  const mapTex = useMapTileMosaicTexture(
+  const {
+    texture: mapTex,
+    canvas: mosaicCanvas,
+    revision: mosaicRev,
+  } = useMapTileMosaicTexture(
     mapEnabled,
     mapBackground?.tileUrl ?? DEFAULT_MAP_BACKGROUND.tileUrl,
     tileGrid,
     landSize,
     mapBackground?.headingDeg ?? 0,
+    useCompositedGround,
   );
 
+  // Composited multi-texture ground CanvasTexture (base + all surfaceZones)
+  const compositeCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [compositeTex, setCompositeTex] = useState<THREE.CanvasTexture | null>(null);
+  const [assetLoadTick, setAssetLoadTick] = useState(0);
+
+  useEffect(() => {
+    if (!useCompositedGround) {
+      setCompositeTex((prev) => {
+        prev?.dispose();
+        return null;
+      });
+      return;
+    }
+
+    const res = soft ? 512 : 1024;
+    if (!compositeCanvasRef.current || compositeCanvasRef.current.width !== res) {
+      const c = document.createElement('canvas');
+      c.width = res;
+      c.height = res;
+      compositeCanvasRef.current = c;
+    }
+
+    const canvas = compositeCanvasRef.current;
+    renderCompositeGroundCanvas({
+      world: syntheticWorld,
+      textures,
+      canvas,
+      landSize,
+      satelliteMosaic: mosaicCanvas,
+      tileGrid,
+      onAssetImageLoaded: () => setAssetLoadTick((t) => t + 1),
+    });
+
+    setCompositeTex((prev) => {
+      if (prev && prev.image === canvas) {
+        prev.needsUpdate = true;
+        return prev;
+      }
+      prev?.dispose();
+      const t = new THREE.CanvasTexture(canvas);
+      t.colorSpace = THREE.SRGBColorSpace;
+      t.wrapS = THREE.ClampToEdgeWrapping;
+      t.wrapT = THREE.ClampToEdgeWrapping;
+      t.anisotropy = soft ? 1 : 4;
+      t.needsUpdate = true;
+      return t;
+    });
+    invalidate();
+
+    // Sync composited texture into mapTextureBase64 for Gazebo SDF export (debounced)
+    const timer = globalThis.setTimeout(() => {
+      const b64 = exportCompositeGroundPngBase64(
+        syntheticWorld,
+        textures,
+        landSize,
+        mosaicCanvas,
+        tileGrid,
+        512,
+      );
+      if (b64) {
+        useRoboForgeStore.getState().setMapTileTexture(b64);
+      }
+    }, 350);
+
+    return () => {
+      globalThis.clearTimeout(timer);
+    };
+  }, [
+    useCompositedGround,
+    syntheticWorld,
+    textures,
+    landSize,
+    mosaicCanvas,
+    mosaicRev,
+    tileGrid,
+    soft,
+    assetLoadTick,
+    invalidate,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      setCompositeTex((prev) => {
+        prev?.dispose();
+        return null;
+      });
+    };
+  }, []);
+
   const terrainGeo = useMemo(() => {
-    if (!mapEnabled) return null;
-    return buildTerrainBufferGeometry(landSize, mapBackground, tileGrid, segments);
+    if (!mapEnabled && !useCompositedGround) return null;
+    return buildTerrainBufferGeometry(
+      landSize,
+      mapEnabled ? mapBackground : undefined,
+      tileGrid,
+      mapEnabled ? segments : 4,
+      useCompositedGround,
+    );
   }, [
     mapEnabled,
+    useCompositedGround,
     landSize,
     mapBackground?.elevationEnabled,
     mapBackground?.elevationScale,
@@ -193,10 +340,10 @@ export function WorldGroundTerrainMesh({
 
   if (!ground.enabled && !mapEnabled) return null;
 
-  if (mapEnabled && terrainGeo) {
-    const headingRad = -((mapBackground?.headingDeg ?? 0) * Math.PI) / 180;
-    const opacity = mapBackground?.opacity ?? DEFAULT_MAP_BACKGROUND.opacity;
-    const activeMap = customGroundTex ?? mapTex;
+  if ((mapEnabled || useCompositedGround) && terrainGeo) {
+    const headingRad = mapEnabled ? -((mapBackground?.headingDeg ?? 0) * Math.PI) / 180 : 0;
+    const opacity = mapEnabled ? (mapBackground?.opacity ?? DEFAULT_MAP_BACKGROUND.opacity) : 1;
+    const activeMap = useCompositedGround ? compositeTex : (customGroundTex ?? mapTex);
 
     return (
       <group rotation={[0, 0, headingRad]}>
@@ -204,6 +351,9 @@ export function WorldGroundTerrainMesh({
           data-testid="map-tile-ground"
           geometry={terrainGeo}
           receiveShadow={!soft}
+          onPointerDown={onGroundPointerDown}
+          onPointerMove={onGroundPointerMove}
+          onPointerUp={onGroundPointerUp}
           onClick={
             onSelectWorld
               ? (e) => {
@@ -215,12 +365,18 @@ export function WorldGroundTerrainMesh({
           }
         >
           <meshStandardMaterial
-            key={activeMap ? 'map-terrain-tex' : 'map-terrain-flat'}
-            color={activeMap ? '#d6dce6' : '#1b2432'}
+            key={
+              useCompositedGround
+                ? 'composite-terrain-tex'
+                : activeMap
+                  ? 'map-terrain-tex'
+                  : 'map-terrain-flat'
+            }
+            color={activeMap ? '#ffffff' : '#1b2432'}
             map={activeMap ?? undefined}
-            roughness={1}
-            metalness={0}
-            envMapIntensity={0}
+            roughness={0.95}
+            metalness={0.02}
+            envMapIntensity={useCompositedGround ? 0.35 : 0}
             transparent={opacity < 0.999}
             opacity={opacity}
             side={THREE.DoubleSide}
@@ -234,6 +390,9 @@ export function WorldGroundTerrainMesh({
     <mesh
       position={[0, 0, -0.01]}
       receiveShadow={!soft}
+      onPointerDown={onGroundPointerDown}
+      onPointerMove={onGroundPointerMove}
+      onPointerUp={onGroundPointerUp}
       onClick={
         onSelectWorld
           ? (e) => {

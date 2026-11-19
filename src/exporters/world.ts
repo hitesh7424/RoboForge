@@ -128,16 +128,22 @@ export function generateWorldSdf(project: Project, target: TargetConfig): string
     const customGroundTex = world.ground.textureId
       ? textures.find((t) => t.id === world.ground.textureId)
       : undefined;
-    const mapTileTexUri = mapBg?.enabled
-      ? `model://${escapeXml(pkgName)}/materials/textures/${escapeXml(world.name)}_map.png`
-      : undefined;
-    const activeGroundTexUri = customGroundTex
-      ? `model://${escapeXml(pkgName)}/materials/textures/${escapeXml(customGroundTex.name)}.${customGroundTex.format}`
-      : mapTileTexUri;
+    const hasCosmeticMap = Boolean(
+      (world.surfaceZones ?? []).some((z) => z.visible) || world.cosmetics?.groundBasePresetId,
+    );
+    const mapTileTexUri =
+      mapBg?.enabled || hasCosmeticMap
+        ? `model://${escapeXml(pkgName)}/materials/textures/${escapeXml(world.name)}_map.png`
+        : undefined;
+    const activeGroundTexUri = hasCosmeticMap
+      ? mapTileTexUri
+      : customGroundTex
+        ? `model://${escapeXml(pkgName)}/materials/textures/${escapeXml(customGroundTex.name)}.${customGroundTex.format}`
+        : mapTileTexUri;
     const terrainMeshUri = `model://${escapeXml(pkgName)}/meshes/${escapeXml(world.name)}_terrain.obj`;
     // Keep map-tile plane 1:1 true-to-scale with cropped landSizeMeters when flat
-    const visGx = !customGroundTex && mapBg?.enabled ? landSize : gx;
-    const visGy = !customGroundTex && mapBg?.enabled ? landSize : gy;
+    const visGx = (!customGroundTex || hasCosmeticMap) && mapBg?.enabled ? landSize : gx;
+    const visGy = (!customGroundTex || hasCosmeticMap) && mapBg?.enabled ? landSize : gy;
 
     lines.push(``);
     lines.push(`    <model name="ground_plane">`);

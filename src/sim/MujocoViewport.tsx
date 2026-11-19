@@ -935,6 +935,8 @@ function MujocoSceneContent({
           <WorldGroundTerrainMesh
             ground={project.world.ground}
             mapBackground={project.world.mapBackground}
+            surfaceZones={project.world.surfaceZones}
+            cosmetics={project.world.cosmetics}
             textures={project.textures}
             soft={soft}
             isEditingWorld={isEditingWorld}

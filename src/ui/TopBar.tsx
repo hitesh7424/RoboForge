@@ -7,6 +7,7 @@ import {
   Eye,
   FolderOpen,
   Globe,
+  Paintbrush,
   PanelBottom,
   PanelLeft,
   PanelRight,
@@ -40,6 +41,7 @@ import {
 const MODES: { id: WorkspaceMode; label: string; icon: typeof Box }[] = [
   { id: 'robot', label: 'Robot', icon: Box },
   { id: 'world', label: 'World & Sim', icon: Globe },
+  { id: 'world_studio', label: 'World Studio', icon: Paintbrush },
   { id: 'preview', label: 'Preview', icon: Eye },
 ];
 
@@ -164,7 +166,7 @@ export function TopBar() {
                 e.currentTarget.blur();
               }
             }}
-            className={`w-32 font-mono text-xs ${
+            className={`w-28 font-mono text-xs ${
               nameValid ? '' : 'border-red-500 focus-visible:ring-red-500'
             }`}
           />
@@ -180,7 +182,7 @@ export function TopBar() {
         </div>
 
         <Select value={project.target} onValueChange={(v) => setTarget(v as TargetDistro)}>
-          <SelectTrigger aria-label="Target ROS 2 distribution" className="w-52">
+          <SelectTrigger aria-label="Target ROS 2 distribution" className="w-44">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -197,7 +199,7 @@ export function TopBar() {
             handleLoadTemplate(e.target.value);
             e.target.value = '';
           }}
-          className="hidden xl:block h-7 w-28 truncate rounded border border-[#2a3346] bg-[#0e121a] px-2 text-xs text-slate-300 hover:bg-[#1a202e] cursor-pointer"
+          className="hidden xl:block h-7 w-24 shrink-0 rounded border border-[#2a3346] bg-[#0e121a] px-1.5 text-xs text-slate-300 hover:bg-[#1a202e] cursor-pointer"
         >
           <option value="" disabled>
             Templates...
@@ -221,11 +223,13 @@ export function TopBar() {
               type="button"
               onClick={() => setMode(m.id)}
               aria-pressed={active}
-              className={`inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 rounded px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer ${
+              className={`inline-flex items-center gap-1 whitespace-nowrap shrink-0 rounded px-2 py-1 text-xs font-medium transition-colors cursor-pointer ${
                 active
                   ? m.id === 'world'
                     ? 'bg-emerald-600 text-white'
-                    : 'bg-blue-600 text-white'
+                    : m.id === 'world_studio'
+                      ? 'bg-teal-600 text-white'
+                      : 'bg-blue-600 text-white'
                   : 'text-slate-400 hover:bg-[#161c28] hover:text-slate-100'
               }`}
             >
@@ -237,55 +241,57 @@ export function TopBar() {
       </nav>
 
       <div className="flex items-center gap-1.5 shrink-0">
-        {/* Panel collapse/expand toggles */}
-        <div
-          role="group"
-          aria-label="Toggle workspace panels"
-          className="flex items-center gap-0.5 rounded border border-[#232b3b] bg-[#0b0e14] p-0.5"
-        >
-          <button
-            type="button"
-            onClick={() => togglePanel('left')}
-            aria-label="Toggle left sidebar"
-            aria-pressed={!collapsedPanels.left}
-            title={collapsedPanels.left ? 'Show Left Sidebar' : 'Collapse Left Sidebar'}
-            className={`inline-flex h-6 w-6 items-center justify-center rounded transition-colors cursor-pointer ${
-              !collapsedPanels.left
-                ? 'bg-[#1e2636] text-blue-300'
-                : 'text-slate-500 hover:bg-[#161c28] hover:text-slate-200'
-            }`}
+        {/* Panel collapse/expand toggles (for 3-panel workspace modes) */}
+        {mode !== 'world_studio' && (
+          <div
+            role="group"
+            aria-label="Toggle workspace panels"
+            className="flex items-center gap-0.5 rounded border border-[#232b3b] bg-[#0b0e14] p-0.5"
           >
-            <PanelLeft className="h-3.5 w-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => togglePanel('bottom')}
-            aria-label="Toggle bottom bar"
-            aria-pressed={!collapsedPanels.bottom}
-            title={collapsedPanels.bottom ? 'Show Bottom Bar' : 'Collapse Bottom Bar'}
-            className={`inline-flex h-6 w-6 items-center justify-center rounded transition-colors cursor-pointer ${
-              !collapsedPanels.bottom
-                ? 'bg-[#1e2636] text-blue-300'
-                : 'text-slate-500 hover:bg-[#161c28] hover:text-slate-200'
-            }`}
-          >
-            <PanelBottom className="h-3.5 w-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => togglePanel('right')}
-            aria-label="Toggle right inspector"
-            aria-pressed={!collapsedPanels.right}
-            title={collapsedPanels.right ? 'Show Right Inspector' : 'Collapse Right Inspector'}
-            className={`inline-flex h-6 w-6 items-center justify-center rounded transition-colors cursor-pointer ${
-              !collapsedPanels.right
-                ? 'bg-[#1e2636] text-blue-300'
-                : 'text-slate-500 hover:bg-[#161c28] hover:text-slate-200'
-            }`}
-          >
-            <PanelRight className="h-3.5 w-3.5" />
-          </button>
-        </div>
+            <button
+              type="button"
+              onClick={() => togglePanel('left')}
+              aria-label="Toggle left sidebar"
+              aria-pressed={!collapsedPanels.left}
+              title={collapsedPanels.left ? 'Show Left Sidebar' : 'Collapse Left Sidebar'}
+              className={`inline-flex h-6 w-6 items-center justify-center rounded transition-colors cursor-pointer ${
+                !collapsedPanels.left
+                  ? 'bg-[#1e2636] text-blue-300'
+                  : 'text-slate-500 hover:bg-[#161c28] hover:text-slate-200'
+              }`}
+            >
+              <PanelLeft className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => togglePanel('bottom')}
+              aria-label="Toggle bottom bar"
+              aria-pressed={!collapsedPanels.bottom}
+              title={collapsedPanels.bottom ? 'Show Bottom Bar' : 'Collapse Bottom Bar'}
+              className={`inline-flex h-6 w-6 items-center justify-center rounded transition-colors cursor-pointer ${
+                !collapsedPanels.bottom
+                  ? 'bg-[#1e2636] text-blue-300'
+                  : 'text-slate-500 hover:bg-[#161c28] hover:text-slate-200'
+              }`}
+            >
+              <PanelBottom className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => togglePanel('right')}
+              aria-label="Toggle right inspector"
+              aria-pressed={!collapsedPanels.right}
+              title={collapsedPanels.right ? 'Show Right Inspector' : 'Collapse Right Inspector'}
+              className={`inline-flex h-6 w-6 items-center justify-center rounded transition-colors cursor-pointer ${
+                !collapsedPanels.right
+                  ? 'bg-[#1e2636] text-blue-300'
+                  : 'text-slate-500 hover:bg-[#161c28] hover:text-slate-200'
+              }`}
+            >
+              <PanelRight className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
         <span className="hidden 2xl:inline text-xs text-slate-400 tabular-nums whitespace-nowrap mr-1">
           {autosaveStatus === 'saving'
             ? 'Saving...'
