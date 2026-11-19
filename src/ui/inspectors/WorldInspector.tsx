@@ -4,6 +4,7 @@ import {
   computeElevationStats,
   DEFAULT_MAP_BACKGROUND,
   downloadMapTilesTextureBase64,
+  getMapLandSize,
   MAP_TILE_PRESETS,
   parseCoordinateInput,
   TERRARIUM_URL_DEFAULT,
@@ -15,6 +16,7 @@ import {
   DEFAULT_PINE_COLOR,
   DEFAULT_TRUNK_COLOR,
 } from '@/core/treeGeometry';
+import { downloadFullMapAreaPng } from '@/core/worldTextureCompositor';
 import { Button } from '@/ui/components/button';
 import { Input } from '@/ui/components/input';
 import { NumericField, PoseFields, RosNameField } from '@/ui/inspectors/NumericField';
@@ -42,6 +44,7 @@ function hexToRgbTuple(hex: string): [number, number, number] {
 }
 
 export function WorldSettingsInspector({ world }: { world: World }) {
+  const textures = useRoboForgeStore((s) => s.project.textures);
   const units = useRoboForgeStore((s) => s.units);
   const updateWorld = useRoboForgeStore((s) => s.updateWorld);
   const setMapTileTexture = useRoboForgeStore((s) => s.setMapTileTexture);
@@ -50,12 +53,14 @@ export function WorldSettingsInspector({ world }: { world: World }) {
   const heightmapInputRef = useRef<HTMLInputElement | null>(null);
   const mapBg: NonNullable<World['mapBackground']> =
     world.mapBackground ?? DEFAULT_MAP_BACKGROUND;
+  const landDims = getMapLandSize(world.mapBackground, world.ground.size);
   const elevStats = computeElevationStats(mapBg);
   const [coordInput, setCoordInput] = useState(
     `${mapBg.latitude.toFixed(6)}, ${mapBg.longitude.toFixed(6)}`,
   );
   const [coordError, setCoordError] = useState(false);
   const [downloadingMapTex, setDownloadingMapTex] = useState(false);
+  const [savingMapPng, setSavingMapPng] = useState(false);
 
   const ensureMapBackground = (w: World) => {
     if (!w.mapBackground) {
@@ -382,9 +387,9 @@ export function WorldSettingsInspector({ world }: { world: World }) {
 
         <div className="grid grid-cols-2 gap-2">
           <NumericField
-            id="map-land-size"
-            label="Land Size (m)"
-            value={mapBg.landSizeMeters ?? DEFAULT_MAP_BACKGROUND.landSizeMeters}
+            id="map-land-width"
+            label="Width X (m)"
+            value={landDims.width}
             unitMode="raw"
             unitSystem={units}
             step={10}
@@ -392,7 +397,34 @@ export function WorldSettingsInspector({ world }: { world: World }) {
             max={5000}
             onCommit={(val) =>
               updateWorld((w) => {
-                ensureMapBackground(w).landSizeMeters = Math.max(10, Math.min(5000, val));
+                const m = ensureMapBackground(w);
+                const nextW = Math.max(10, Math.min(5000, val));
+                const nextH = m.landHeightMeters ?? m.landSizeMeters ?? DEFAULT_MAP_BACKGROUND.landSizeMeters;
+                m.landWidthMeters = nextW;
+                m.landHeightMeters = nextH;
+                m.landSizeMeters = Math.max(nextW, nextH);
+                w.ground.size = [nextW, nextH];
+              })
+            }
+          />
+          <NumericField
+            id="map-land-height"
+            label="Height Y (m)"
+            value={landDims.height}
+            unitMode="raw"
+            unitSystem={units}
+            step={10}
+            min={10}
+            max={5000}
+            onCommit={(val) =>
+              updateWorld((w) => {
+                const m = ensureMapBackground(w);
+                const nextW = m.landWidthMeters ?? m.landSizeMeters ?? DEFAULT_MAP_BACKGROUND.landSizeMeters;
+                const nextH = Math.max(10, Math.min(5000, val));
+                m.landWidthMeters = nextW;
+                m.landHeightMeters = nextH;
+                m.landSizeMeters = Math.max(nextW, nextH);
+                w.ground.size = [nextW, nextH];
               })
             }
           />
@@ -586,43 +618,73 @@ export function WorldSettingsInspector({ world }: { world: World }) {
           </div>
         </div>
 
-        <div className="flex items-center justify-between gap-2 rounded border border-[#222938] bg-[#0b0e14] px-2.5 py-1.5">
+        <div className="space-y-1.5 rounded border border-[#222938] bg-[#0b0e14] px-2.5 py-2">
           <div className="min-w-0">
             <div className="font-mono text-[10px] text-slate-200 truncate">
-              materials/textures/{world.name}_map.png
+              materials/textures/{world.name}_map.png ({Math.round(landDims.width)}m×
+              {Math.round(landDims.height)}m)
             </div>
             <div className="text-[10px] text-slate-400">
               {mapBg.mapTextureBase64
-                ? 'Downloaded & cached for ROS 2 ZIP export'
+                ? 'Cached for ROS 2 ZIP export · Save PNG to upscale externally'
                 : 'Auto-downloads on viewport load or ZIP export'}
             </div>
           </div>
-          <Button
-            type="button"
-            size="sm"
-            variant="secondary"
-            disabled={downloadingMapTex}
-            onClick={async () => {
-              setDownloadingMapTex(true);
-              try {
-                const res = await downloadMapTilesTextureBase64(mapBg, 512);
-                if (res?.base64) {
-                  setMapTileTexture(res.base64);
+          <div className="grid grid-cols-2 gap-1.5">
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              disabled={downloadingMapTex}
+              onClick={async () => {
+                setDownloadingMapTex(true);
+                try {
+                  const res = await downloadMapTilesTextureBase64(mapBg, 1024);
+                  if (res?.base64) {
+                    setMapTileTexture(res.base64);
+                    addLog(
+                      'info',
+                      `Cached map ground texture (${res.widthPx}×${res.heightPx}px · ${res.loadedCount}/${res.totalCount} tiles) to materials/textures/${world.name}_map.png.`,
+                    );
+                  } else {
+                    addLog('warning', 'Map tile download returned fallback texture.');
+                  }
+                } finally {
+                  setDownloadingMapTex(false);
+                }
+              }}
+            >
+              <Download className="h-3.5 w-3.5" />
+              {downloadingMapTex ? 'Fetching...' : 'Refresh Tiles'}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={savingMapPng}
+              data-testid="world-inspector-save-map-png"
+              onClick={async () => {
+                setSavingMapPng(true);
+                try {
+                  const res = await downloadFullMapAreaPng(world, textures, 'original');
                   addLog(
                     'info',
-                    `Downloaded map ground texture (${res.loadedCount}/${res.totalCount} tiles) to materials/textures/${world.name}_map.png.`,
+                    `Saved full-quality map tile "${res.filename}" (${res.widthPx}×${res.heightPx}px).`,
                   );
-                } else {
-                  addLog('warning', 'Map tile download returned fallback texture.');
+                } catch (err) {
+                  addLog(
+                    'error',
+                    `Save map PNG failed: ${err instanceof Error ? err.message : 'unknown error'}`,
+                  );
+                } finally {
+                  setSavingMapPng(false);
                 }
-              } finally {
-                setDownloadingMapTex(false);
-              }
-            }}
-          >
-            <Download className="h-3.5 w-3.5" />
-            {downloadingMapTex ? 'Fetching...' : 'Download Tiles'}
-          </Button>
+              }}
+            >
+              <Download className="h-3.5 w-3.5 text-emerald-400" />
+              {savingMapPng ? 'Saving...' : 'Save Map PNG'}
+            </Button>
+          </div>
         </div>
 
         <Button

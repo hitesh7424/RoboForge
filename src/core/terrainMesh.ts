@@ -29,12 +29,15 @@ export function shouldUseTerrainMesh(mapBg: MapBg | undefined): boolean {
  * the air when terrain extends below Z = 0.
  */
 export function generateTerrainObj(
-  landSizeMeters: number,
+  landWidthMeters: number,
   mapBg: MapBg | undefined,
   requestedSegments?: number,
+  landHeightMeters?: number,
 ): string {
-  const extent = Math.max(10, landSizeMeters || DEFAULT_MAP_BACKGROUND.landSizeMeters);
-  const half = extent / 2;
+  const extentX = Math.max(10, landWidthMeters || DEFAULT_MAP_BACKGROUND.landSizeMeters);
+  const extentY = Math.max(10, landHeightMeters ?? extentX);
+  const halfX = extentX / 2;
+  const halfY = extentY / 2;
 
   // Use an EVEN segment count (8..40) so there is an exact vertex at (0, 0) with Z = 0.0000
   // and triangle count stays fast for DART FCL collision (<= 3,200 tris).
@@ -43,7 +46,8 @@ export function generateTerrainObj(
   const segs = Math.max(8, Math.round(clamped / 2) * 2);
   const cols = segs + 1;
   const rows = segs + 1;
-  const step = extent / segs;
+  const stepX = extentX / segs;
+  const stepY = extentY / segs;
 
   // Match Three.js WorldTerrainMesh `<group rotation={[0, 0, headingRad]}>`
   // where headingRad = -(headingDeg * Math.PI) / 180.
@@ -55,9 +59,9 @@ export function generateTerrainObj(
   const heights = new Float64Array(rows * cols);
 
   for (let r = 0; r < rows; r++) {
-    const wy = -half + r * step; // row 0 = South (-half), row segs = North (+half)
+    const wy = -halfY + r * stepY; // row 0 = South (-halfY), row segs = North (+halfY)
     for (let c = 0; c < cols; c++) {
-      const wx = -half + c * step; // col 0 = West (-half), col segs = East (+half)
+      const wx = -halfX + c * stepX; // col 0 = West (-halfX), col segs = East (+halfX)
       // Inverse-rotate world (wx, wy) back into local ENU grid frame
       const lx = headingDeg === 0 ? wx : wx * cosH + wy * sinH;
       const ly = headingDeg === 0 ? wy : -wx * sinH + wy * cosH;
@@ -66,16 +70,16 @@ export function generateTerrainObj(
   }
 
   const lines: string[] = [
-    `# RoboForge georeferenced terrain mesh (${extent}m x ${extent}m, ${segs}x${segs} grid)`,
+    `# RoboForge georeferenced terrain mesh (${extentX}m x ${extentY}m, ${segs}x${segs} grid)`,
     `# Local ROS frame: +X East, +Y North, +Z Up; origin (0,0) grounded at exact DEM elevation`,
     `o terrain`,
   ];
 
   // Vertices (v)
   for (let r = 0; r < rows; r++) {
-    const wy = -half + r * step;
+    const wy = -halfY + r * stepY;
     for (let c = 0; c < cols; c++) {
-      const wx = -half + c * step;
+      const wx = -halfX + c * stepX;
       const wz = heights[r * cols + c] ?? 0;
       lines.push(`v ${fmt(wx, 4)} ${fmt(wy, 4)} ${fmt(wz, 4)}`);
     }
@@ -94,11 +98,11 @@ export function generateTerrainObj(
   for (let r = 0; r < rows; r++) {
     const rPrev = Math.max(0, r - 1);
     const rNext = Math.min(rows - 1, r + 1);
-    const dy = (rNext - rPrev) * step;
+    const dy = (rNext - rPrev) * stepY;
     for (let c = 0; c < cols; c++) {
       const cPrev = Math.max(0, c - 1);
       const cNext = Math.min(cols - 1, c + 1);
-      const dx = (cNext - cPrev) * step;
+      const dx = (cNext - cPrev) * stepX;
 
       const dzdx = ((heights[r * cols + cNext] ?? 0) - (heights[r * cols + cPrev] ?? 0)) / dx;
       const dzdy = ((heights[rNext * cols + c] ?? 0) - (heights[rPrev * cols + c] ?? 0)) / dy;

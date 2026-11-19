@@ -66,10 +66,11 @@ function sampleTileRgbBilinear(
 export async function fetchTerrariumElevationGrid(
   latDeg: number,
   lonDeg: number,
-  landSizeMeters: number,
+  landWidthMeters: number,
   segments = 40,
   urlTemplate = TERRARIUM_URL_DEFAULT,
   preferredDemZoom = 15,
+  landHeightMeters?: number,
 ): Promise<{
   relativeGrid: number[];
   gridSize: number;
@@ -77,15 +78,17 @@ export async function fetchTerrariumElevationGrid(
   loadedTiles: number;
 } | null> {
   const n = Math.max(4, Math.min(96, Math.round(segments))) + 1;
-  const extent = Math.max(10, landSizeMeters);
-  const half = extent / 2;
+  const extentX = Math.max(10, landWidthMeters);
+  const extentY = Math.max(10, landHeightMeters ?? extentX);
+  const halfX = extentX / 2;
+  const halfY = extentY / 2;
   // AWS Terrarium public dataset caps at z = 15 globally
   const demZoom = Math.max(1, Math.min(15, Math.round(preferredDemZoom)));
 
-  // Determine bounding tile indices across corners of [ -half..+half, -half..+half ]
+  // Determine bounding tile indices across corners of [ -halfX..+halfX, -halfY..+halfY ]
   const corners = [
-    latLonFromEnuOffset(latDeg, lonDeg, -half, -half),
-    latLonFromEnuOffset(latDeg, lonDeg, half, half),
+    latLonFromEnuOffset(latDeg, lonDeg, -halfX, -halfY),
+    latLonFromEnuOffset(latDeg, lonDeg, halfX, halfY),
   ];
   const tMin = latLonToTileFloat(corners[1]!.lat, corners[0]!.lon, demZoom); // NW
   const tMax = latLonToTileFloat(corners[0]!.lat, corners[1]!.lon, demZoom); // SE
@@ -161,9 +164,9 @@ export async function fetchTerrariumElevationGrid(
   const relativeGrid = new Array<number>(n * n).fill(0);
 
   for (let row = 0; row < n; row++) {
-    const yM = -half + (row / (n - 1)) * extent;
+    const yM = -halfY + (row / (n - 1)) * extentY;
     for (let col = 0; col < n; col++) {
-      const xM = -half + (col / (n - 1)) * extent;
+      const xM = -halfX + (col / (n - 1)) * extentX;
       const pt = latLonFromEnuOffset(latDeg, lonDeg, xM, yM);
       const elev = sampleAtLatLon(pt.lat, pt.lon);
       relativeGrid[row * n + col] =
@@ -238,15 +241,17 @@ export async function decodeHeightmapImageBase64(
  * and displaced Z vertices from `elevationSource`.
  */
 export function buildTerrainBufferGeometry(
-  landSizeMeters: number,
+  landWidthMeters: number,
   elevationSource: ElevationQuerySource | undefined,
   tileGrid: MapTileGridSpec,
   segments = 40,
   useNormalizedLandUv = false,
+  landHeightMeters?: number,
 ): THREE.BufferGeometry {
   const segs = Math.max(4, Math.min(96, Math.round(segments)));
-  const extent = Math.max(10, landSizeMeters);
-  const geo = new THREE.PlaneGeometry(extent, extent, segs, segs);
+  const extentX = Math.max(10, landWidthMeters);
+  const extentY = Math.max(10, landHeightMeters ?? extentX);
+  const geo = new THREE.PlaneGeometry(extentX, extentY, segs, segs);
 
   const posAttr = geo.getAttribute('position') as THREE.BufferAttribute;
   const uvAttr = geo.getAttribute('uv') as THREE.BufferAttribute;
@@ -260,7 +265,7 @@ export function buildTerrainBufferGeometry(
     posAttr.setZ(i, vz);
 
     if (useNormalizedLandUv) {
-      uvAttr.setXY(i, 0.5 + vx / extent, 0.5 + vy / extent);
+      uvAttr.setXY(i, 0.5 + vx / extentX, 0.5 + vy / extentY);
     } else {
       const u = 0.5 + (vx - eastOff) / mosaicSpan;
       const v = 0.5 + (vy - northOff) / mosaicSpan;

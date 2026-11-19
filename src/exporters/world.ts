@@ -1,5 +1,5 @@
 import { computeGeometryInertia } from '@/core/inertia';
-import { DEFAULT_MAP_BACKGROUND, sampleElevationAt } from '@/core/mapTiles';
+import { getMapLandSize, sampleElevationAt } from '@/core/mapTiles';
 import type { Primitive, Project, TextureAsset } from '@/core/schema';
 import { shouldUseTerrainMesh } from '@/core/terrainMesh';
 import {
@@ -118,12 +118,9 @@ export function generateWorldSdf(project: Project, target: TargetConfig): string
   // Ground plane (or exact triangulated DEM terrain mesh when elevation relief is active)
   if (world.ground.enabled) {
     const mapBg = world.mapBackground;
-    const landSize = Math.max(
-      10,
-      mapBg?.enabled ? (mapBg.landSizeMeters ?? DEFAULT_MAP_BACKGROUND.landSizeMeters) : 10,
-    );
-    const gx = mapBg?.enabled ? Math.max(world.ground.size[0], landSize) : world.ground.size[0];
-    const gy = mapBg?.enabled ? Math.max(world.ground.size[1], landSize) : world.ground.size[1];
+    const landDims = getMapLandSize(mapBg, world.ground.size);
+    const gx = mapBg?.enabled ? Math.max(world.ground.size[0], landDims.width) : world.ground.size[0];
+    const gy = mapBg?.enabled ? Math.max(world.ground.size[1], landDims.height) : world.ground.size[1];
     const useTerrainMesh = shouldUseTerrainMesh(mapBg);
     const customGroundTex = world.ground.textureId
       ? textures.find((t) => t.id === world.ground.textureId)
@@ -141,9 +138,9 @@ export function generateWorldSdf(project: Project, target: TargetConfig): string
         ? `model://${escapeXml(pkgName)}/materials/textures/${escapeXml(customGroundTex.name)}.${customGroundTex.format}`
         : mapTileTexUri;
     const terrainMeshUri = `model://${escapeXml(pkgName)}/meshes/${escapeXml(world.name)}_terrain.obj`;
-    // Keep map-tile plane 1:1 true-to-scale with cropped landSizeMeters when flat
-    const visGx = (!customGroundTex || hasCosmeticMap) && mapBg?.enabled ? landSize : gx;
-    const visGy = (!customGroundTex || hasCosmeticMap) && mapBg?.enabled ? landSize : gy;
+    // Keep map-tile plane 1:1 true-to-scale with cropped rectangular land dimensions when flat
+    const visGx = (!customGroundTex || hasCosmeticMap) && mapBg?.enabled ? landDims.width : gx;
+    const visGy = (!customGroundTex || hasCosmeticMap) && mapBg?.enabled ? landDims.height : gy;
 
     lines.push(``);
     lines.push(`    <model name="ground_plane">`);

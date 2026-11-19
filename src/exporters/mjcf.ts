@@ -1,5 +1,5 @@
 import { computeGeometryInertia, resolveLinkInertia } from '@/core/inertia';
-import { computeElevationStats, DEFAULT_MAP_BACKGROUND } from '@/core/mapTiles';
+import { computeElevationStats, getMapLandSize } from '@/core/mapTiles';
 import type { Asset, Geometry, Link, Pose, Primitive, Project, Vec3 } from '@/core/schema';
 import { computeTreeInertial, getTreeParts } from '@/core/treeGeometry';
 import {
@@ -193,16 +193,14 @@ export function generateMujocoXml(project: Project, options: MujocoExportOptions
     Boolean(mapBg?.enabled) &&
     elevStats.hasRelief &&
     (mapBg?.elevationGridSize ?? 0) >= 2;
-  const landExtent = Math.max(
-    10,
-    mapBg?.enabled ? (mapBg.landSizeMeters ?? DEFAULT_MAP_BACKGROUND.landSizeMeters) : 10,
-  );
-  const halfLand = landExtent / 2;
+  const landDims = getMapLandSize(mapBg, world.ground.size);
+  const halfLandX = landDims.width / 2;
+  const halfLandY = landDims.height / 2;
 
   if (useTerrainHfield && mapBg?.elevationGridSize) {
     const n = mapBg.elevationGridSize;
     lines.push(
-      `    <hfield name="world_terrain" nrow="${n}" ncol="${n}" size="${fmt(halfLand)} ${fmt(halfLand)} ${fmt(Math.max(0.02, elevStats.rangeZ))} 0.5"/>`,
+      `    <hfield name="world_terrain" nrow="${n}" ncol="${n}" size="${fmt(halfLandX)} ${fmt(halfLandY)} ${fmt(Math.max(0.02, elevStats.rangeZ))} 0.5"/>`,
     );
   }
 
@@ -217,8 +215,8 @@ export function generateMujocoXml(project: Project, options: MujocoExportOptions
         `    <geom name="ground_plane" type="hfield" hfield="world_terrain" pos="0 0 ${fmt(elevStats.minZ)}" material="grid_mat" friction="${fmt(world.ground.friction)} 0.005 0.0001"/>`,
       );
     } else {
-      const gx = Math.max(5, mapBg?.enabled ? halfLand : world.ground.size[0] / 2);
-      const gy = Math.max(5, mapBg?.enabled ? halfLand : world.ground.size[1] / 2);
+      const gx = Math.max(5, halfLandX);
+      const gy = Math.max(5, halfLandY);
       lines.push(
         `    <geom name="ground_plane" type="plane" size="${fmt(gx)} ${fmt(gy)} 0.1" material="grid_mat" friction="${fmt(world.ground.friction)} 0.005 0.0001"/>`,
       );

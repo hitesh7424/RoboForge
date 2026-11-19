@@ -259,5 +259,79 @@ describe('ROS 2 package exporters across Jazzy, Humble, and Lyrical targets', ()
     const bridgeYaml = files['config/bridge.yaml'] as string;
     expect(bridgeYaml).toContain('ros_topic_name: "/joint_states"\n  gz_topic_name: "/joint_states"');
   });
+
+  it('exports standalone World Only ROS 2 package without robot URDF files and with rectangular map dimensions', () => {
+    const project = createFourWheelRoverProject('jazzy-harmonic');
+    project.world.mapBackground = {
+      enabled: true,
+      tileUrl: 'http://mt0.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
+      latitude: 37.422,
+      longitude: -122.0841,
+      elevation: 0,
+      headingDeg: 0,
+      zoom: 19,
+      opacity: 0.96,
+      landSizeMeters: 160,
+      landWidthMeters: 160,
+      landHeightMeters: 70,
+      elevationEnabled: false,
+    };
+    project.world.ground.size = [160, 70];
+
+    const worldFiles = exportRos2Package(project, undefined, 'world');
+    const keys = Object.keys(worldFiles);
+
+    expect(keys).toContain('package.xml');
+    expect(keys).toContain('CMakeLists.txt');
+    expect(keys).toContain('worlds/rover_arena.sdf');
+    expect(keys).toContain('launch/world.launch.py');
+    expect(keys).toContain('materials/textures/rover_arena_map.png');
+
+    // Must NOT include robot URDF/RViz/spawn files
+    expect(keys.some((k) => k.startsWith('urdf/'))).toBe(false);
+    expect(keys.some((k) => k.startsWith('sdf/'))).toBe(false);
+    expect(keys).not.toContain('launch/sim.launch.py');
+    expect(keys).not.toContain('launch/spawn_robot.launch.py');
+
+    const pkgXml = worldFiles['package.xml'] as string;
+    expect(pkgXml).toContain('<name>scout_rover_pkg_world</name>');
+
+    const worldSdf = worldFiles['worlds/rover_arena.sdf'] as string;
+    expect(worldSdf).toContain('<size>160 70</size>');
+    expect(worldSdf).toContain('model://scout_rover_pkg_world/materials/textures/rover_arena_map.png');
+
+    const worldLaunch = worldFiles['launch/world.launch.py'] as string;
+    expect(worldLaunch).toContain("get_package_share_directory('scout_rover_pkg_world')");
+    expect(worldLaunch).toContain('rover_arena.sdf');
+  });
+
+  it('exports standalone Robot Only ROS 2 package with spawn_robot.launch.py and without world files', () => {
+    const project = createFourWheelRoverProject('jazzy-harmonic');
+    const robotFiles = exportRos2Package(project, undefined, 'robot');
+    const keys = Object.keys(robotFiles);
+
+    expect(keys).toContain('package.xml');
+    expect(keys).toContain('CMakeLists.txt');
+    expect(keys).toContain('urdf/scout_rover.urdf.xacro');
+    expect(keys).toContain('urdf/scout_rover_gazebo.xacro');
+    expect(keys).toContain('sdf/scout_rover.sdf');
+    expect(keys).toContain('launch/display.launch.py');
+    expect(keys).toContain('launch/spawn_robot.launch.py');
+    expect(keys).toContain('config/bridge.yaml');
+
+    // Must NOT include world SDF or world-only launch
+    expect(keys.some((k) => k.startsWith('worlds/'))).toBe(false);
+    expect(keys).not.toContain('launch/sim.launch.py');
+    expect(keys).not.toContain('launch/world.launch.py');
+
+    const pkgXml = robotFiles['package.xml'] as string;
+    expect(pkgXml).toContain('<name>scout_rover_pkg_robot</name>');
+
+    const spawnLaunch = robotFiles['launch/spawn_robot.launch.py'] as string;
+    expect(spawnLaunch).toContain("get_package_share_directory('scout_rover_pkg_robot')");
+    expect(spawnLaunch).toContain("DeclareLaunchArgument('x'");
+    expect(spawnLaunch).toContain("DeclareLaunchArgument('yaw'");
+  });
 });
+
 

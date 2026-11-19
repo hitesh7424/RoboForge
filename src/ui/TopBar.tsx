@@ -45,6 +45,12 @@ const MODES: { id: WorkspaceMode; label: string; icon: typeof Box }[] = [
   { id: 'preview', label: 'Preview', icon: Eye },
 ];
 
+const SHORT_TARGET_LABELS: Record<TargetDistro, string> = {
+  'jazzy-harmonic': 'Jazzy · Harmonic',
+  'humble-fortress': 'Humble · Fortress',
+  'lyrical-jetty': 'Lyrical · Jetty',
+};
+
 export function TopBar() {
   const project = useRoboForgeStore((s) => s.project);
   const mode = useRoboForgeStore((s) => s.mode);
@@ -129,15 +135,15 @@ export function TopBar() {
   };
 
   return (
-    <header className="relative z-30 flex h-12 w-full items-center justify-between gap-2 border-b border-[#232b3b] bg-[#10141d] px-3 shrink-0">
-      <div className="flex items-center gap-2 min-w-0">
+    <header className="relative z-30 flex h-12 w-full items-center justify-between gap-1.5 border-b border-[#232b3b] bg-[#10141d] px-2 shrink-0">
+      <div className="flex items-center gap-1.5 shrink-0">
         <span className="text-sm font-bold tracking-tight text-slate-100 whitespace-nowrap shrink-0">
           RoboForge
         </span>
 
         <div className="h-4 w-px bg-[#252e3f] shrink-0" aria-hidden="true" />
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1 shrink-0">
           <label htmlFor="project-name-input" className="sr-only">
             ROS 2 package name
           </label>
@@ -166,7 +172,7 @@ export function TopBar() {
                 e.currentTarget.blur();
               }
             }}
-            className={`w-28 font-mono text-xs ${
+            className={`w-[92px] shrink-0 font-mono text-xs ${
               nameValid ? '' : 'border-red-500 focus-visible:ring-red-500'
             }`}
           />
@@ -182,8 +188,15 @@ export function TopBar() {
         </div>
 
         <Select value={project.target} onValueChange={(v) => setTarget(v as TargetDistro)}>
-          <SelectTrigger aria-label="Target ROS 2 distribution" className="w-44">
-            <SelectValue />
+          <SelectTrigger
+            aria-label="Target ROS 2 distribution"
+            title={project.target}
+            className="w-[116px] shrink-0 px-2 text-xs"
+          >
+            <span className="truncate">{SHORT_TARGET_LABELS[project.target]}</span>
+            <span className="sr-only">
+              <SelectValue />
+            </span>
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="jazzy-harmonic">ROS 2 Jazzy + Gazebo Harmonic</SelectItem>
@@ -199,7 +212,7 @@ export function TopBar() {
             handleLoadTemplate(e.target.value);
             e.target.value = '';
           }}
-          className="hidden xl:block h-7 w-24 shrink-0 rounded border border-[#2a3346] bg-[#0e121a] px-1.5 text-xs text-slate-300 hover:bg-[#1a202e] cursor-pointer"
+          className="hidden min-[1360px]:block h-7 w-[82px] shrink-0 rounded border border-[#2a3346] bg-[#0e121a] px-1.5 text-xs text-slate-300 hover:bg-[#1a202e] cursor-pointer"
         >
           <option value="" disabled>
             Templates...
@@ -240,7 +253,7 @@ export function TopBar() {
         })}
       </nav>
 
-      <div className="flex items-center gap-1.5 shrink-0">
+      <div className="flex items-center gap-1 shrink-0">
         {/* Panel collapse/expand toggles (for 3-panel workspace modes) */}
         {mode !== 'world_studio' && (
           <div
@@ -477,9 +490,11 @@ export function TopBar() {
           size="sm"
           onClick={() => openPartEditor(null)}
           aria-label="Open Custom Part Editor"
+          title="Open Custom Part Editor"
         >
           <Wrench className="h-3.5 w-3.5" />
-          Part Editor
+          <span className="hidden 2xl:inline">Part Editor</span>
+          <span className="2xl:hidden">Parts</span>
         </Button>
 
         <Button

@@ -1128,6 +1128,8 @@ export const useRoboForgeStore = create<RoboForgeState>()(
                 longitude: project.world.mapBackground.longitude,
                 zoom: project.world.mapBackground.zoom,
                 landSizeMeters: project.world.mapBackground.landSizeMeters,
+                landWidthMeters: project.world.mapBackground.landWidthMeters,
+                landHeightMeters: project.world.mapBackground.landHeightMeters,
                 headingDeg: project.world.mapBackground.headingDeg,
               }
             : null;
@@ -1141,6 +1143,8 @@ export const useRoboForgeStore = create<RoboForgeState>()(
               prev.longitude !== next.longitude ||
               prev.zoom !== next.zoom ||
               prev.landSizeMeters !== next.landSizeMeters ||
+              prev.landWidthMeters !== next.landWidthMeters ||
+              prev.landHeightMeters !== next.landHeightMeters ||
               prev.headingDeg !== next.headingDeg)
           ) {
             next.mapTextureBase64 = undefined;

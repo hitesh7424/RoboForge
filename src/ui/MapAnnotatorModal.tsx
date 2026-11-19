@@ -27,6 +27,7 @@ import {
   computeMapTileGridForExtent,
   DEFAULT_MAP_BACKGROUND,
   formatTileUrl,
+  getMapLandSize,
   sampleElevationAt,
 } from '@/core/mapTiles';
 import type { WorldObject } from '@/core/schema';
@@ -115,10 +116,8 @@ function LiveMapPreviewScene({
   const invalidate = useThree((s) => s.invalidate);
   const soft = useMemo(() => isSoftwareGlRenderer(), []);
 
-  const landSize = Math.max(
-    10,
-    project.world.mapBackground?.landSizeMeters ?? DEFAULT_MAP_BACKGROUND.landSizeMeters,
-  );
+  const landDims = getMapLandSize(project.world.mapBackground, project.world.ground.size);
+  const landSize = Math.max(landDims.width, landDims.height);
 
   // Trigger render whenever objects or terrain update
   useEffect(() => {
@@ -254,7 +253,9 @@ export function MapAnnotatorModal() {
   >(null);
 
   const mapBg = project.world.mapBackground ?? DEFAULT_MAP_BACKGROUND;
-  const landSize = Math.max(10, mapBg.landSizeMeters ?? DEFAULT_MAP_BACKGROUND.landSizeMeters);
+  const landDims = getMapLandSize(project.world.mapBackground, project.world.ground.size);
+  const landWidth = landDims.width;
+  const landHeight = landDims.height;
   const selectedObjectId = selection?.type === 'worldObject' ? selection.id : null;
 
   const tileGrid = useMemo(
@@ -263,19 +264,21 @@ export function MapAnnotatorModal() {
         mapBg.latitude,
         mapBg.longitude,
         mapBg.zoom,
-        landSize,
+        landWidth,
+        landHeight,
       ),
-    [mapBg.latitude, mapBg.longitude, mapBg.zoom, landSize],
+    [mapBg.latitude, mapBg.longitude, mapBg.zoom, landWidth, landHeight],
   );
 
   // Measure 2D canvas host and auto-fit land on open
   const fitLandView = useCallback(() => {
-    const w = canvasHostRef.current?.clientWidth ?? canvasSize.w;
-    const h = canvasHostRef.current?.clientHeight ?? canvasSize.h;
-    const minDim = Math.max(240, Math.min(w, h));
+    const w = Math.max(240, canvasHostRef.current?.clientWidth ?? canvasSize.w);
+    const h = Math.max(240, canvasHostRef.current?.clientHeight ?? canvasSize.h);
     setViewCenter([0, 0]);
-    setPxPerMeter(Math.max(0.2, (minDim * 0.82) / landSize));
-  }, [landSize, canvasSize.w, canvasSize.h]);
+    const scaleX = (w * 0.82) / landWidth;
+    const scaleY = (h * 0.82) / landHeight;
+    setPxPerMeter(Math.max(0.2, Math.min(scaleX, scaleY)));
+  }, [landWidth, landHeight, canvasSize.w, canvasSize.h]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -300,9 +303,9 @@ export function MapAnnotatorModal() {
       setDraftWall([]);
       setDraftCircle(null);
     }
-    // Only auto-fit when modal opens or landSize changes
+    // Only auto-fit when modal opens or land dimensions change
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, landSize]);
+  }, [isOpen, landWidth, landHeight]);
 
   // Build / load 2D tile mosaic offscreen canvas
   useEffect(() => {
@@ -635,16 +638,16 @@ export function MapAnnotatorModal() {
     }
     ctx.stroke();
 
-    // Selected Land Extent Boundary (landSize x landSize)
-    const halfLand = landSize / 2;
-    const [landLx, landTy] = rosToCanvas(-halfLand, halfLand);
-    const landPx = landSize * pxPerMeter;
+    // Selected Land Extent Boundary (landWidth x landHeight)
+    const [landLx, landTy] = rosToCanvas(-landWidth / 2, landHeight / 2);
+    const landPxW = landWidth * pxPerMeter;
+    const landPxH = landHeight * pxPerMeter;
     ctx.strokeStyle = 'rgba(16, 185, 129, 0.75)';
     ctx.lineWidth = 1.5;
     ctx.setLineDash([6, 4]);
-    ctx.strokeRect(landLx, landTy, landPx, landPx);
+    ctx.strokeRect(landLx, landTy, landPxW, landPxH);
     ctx.setLineDash([]);
-    const landLabel = `Land Area: ${landSize}m × ${landSize}m`;
+    const landLabel = `Land Area: ${landWidth}m × ${landHeight}m`;
     ctx.font = '11px monospace';
     const landTextW = ctx.measureText(landLabel).width;
     ctx.fillStyle = 'rgba(11, 15, 22, 0.8)';
@@ -880,7 +883,8 @@ export function MapAnnotatorModal() {
     canvasSize,
     viewCenter,
     pxPerMeter,
-    landSize,
+    landWidth,
+    landHeight,
     mapBg,
     tileGrid,
     mosaicRev,
@@ -1118,7 +1122,7 @@ export function MapAnnotatorModal() {
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-sm font-semibold text-slate-100">2D Map Feature Builder</span>
             <span className="rounded border border-[#253044] bg-[#0b0e14] px-2 py-0.5 font-mono text-[10px] text-emerald-300">
-              {mapBg.latitude.toFixed(5)}, {mapBg.longitude.toFixed(5)} · {landSize}m×{landSize}m
+              {mapBg.latitude.toFixed(5)}, {mapBg.longitude.toFixed(5)} · {landWidth}m×{landHeight}m
             </span>
 
             <div className="h-4 w-px bg-[#252e3f]" aria-hidden="true" />

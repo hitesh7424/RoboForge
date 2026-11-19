@@ -40,6 +40,8 @@ export const DEFAULT_MAP_BACKGROUND = {
   zoom: 19,
   opacity: 0.96,
   landSizeMeters: 100,
+  landWidthMeters: 100,
+  landHeightMeters: 100,
   elevationEnabled: true,
   elevationSource: 'terrarium' as const,
   elevationUrl: TERRARIUM_URL_DEFAULT,
@@ -47,6 +49,120 @@ export const DEFAULT_MAP_BACKGROUND = {
   terrainSegments: 40,
   heightmapMaxHeight: 25,
 };
+
+/**
+ * Resolve the effective rectangular map land dimensions [widthX, heightY] in meters.
+ * Backwards-compatible with legacy square `landSizeMeters`.
+ */
+export function getMapLandSize(
+  mapBg?: {
+    enabled?: boolean;
+    landSizeMeters?: number;
+    landWidthMeters?: number;
+    landHeightMeters?: number;
+  },
+  fallbackGroundSize?: [number, number],
+): { width: number; height: number } {
+  const baseSquare = mapBg?.landSizeMeters ?? DEFAULT_MAP_BACKGROUND.landSizeMeters;
+  if (mapBg?.enabled) {
+    const width = Math.max(10, Math.min(5000, mapBg.landWidthMeters ?? baseSquare));
+    const height = Math.max(10, Math.min(5000, mapBg.landHeightMeters ?? baseSquare));
+    return { width, height };
+  }
+  if (fallbackGroundSize) {
+    return {
+      width: Math.max(10, Math.min(5000, fallbackGroundSize[0])),
+      height: Math.max(10, Math.min(5000, fallbackGroundSize[1])),
+    };
+  }
+  const width = Math.max(10, Math.min(5000, mapBg?.landWidthMeters ?? baseSquare));
+  const height = Math.max(10, Math.min(5000, mapBg?.landHeightMeters ?? baseSquare));
+  return { width, height };
+}
+
+export type MapExportQuality = 'original' | 2048 | 4096;
+
+/**
+ * Compute pixel dimensions for a ground texture canvas matching the rectangular aspect ratio
+ * with its longest edge equal to `maxSidePx`.
+ */
+export function computeMapTextureCanvasSize(
+  landWidthMeters: number,
+  landHeightMeters: number,
+  maxSidePx = 1024,
+): { widthPx: number; heightPx: number } {
+  const w = Math.max(10, landWidthMeters);
+  const h = Math.max(10, landHeightMeters);
+  const maxPx = Math.max(64, Math.min(8192, Math.round(maxSidePx)));
+  if (w >= h) {
+    const heightPx = Math.max(64, Math.round((maxPx * h) / w));
+    return { widthPx: maxPx, heightPx };
+  }
+  const widthPx = Math.max(64, Math.round((maxPx * w) / h));
+  return { widthPx, heightPx: maxPx };
+}
+
+export interface NativeExportResolutionOptions {
+  tileGrid?: MapTileGridSpec | null;
+  tilePx?: number;
+  sourceImageWidth?: number;
+  sourceImageHeight?: number;
+  sourceIsOneToOne?: boolean;
+  hasOverlayZones?: boolean;
+  quality?: MapExportQuality | number;
+  hardCapPx?: number;
+}
+
+/**
+ * Resolve high-quality export pixel dimensions for `<world>_map.png` without ever
+ * downscaling to 512px previews. Preserves original 1:1 uploaded image dimensions
+ * or native satellite mosaic resolution (with a crisp 2048px floor) up to `hardCapPx`.
+ */
+export function computeNativeExportResolution(
+  landWidthMeters: number,
+  landHeightMeters: number,
+  opts: NativeExportResolutionOptions = {},
+): { widthPx: number; heightPx: number } {
+  const extentX = Math.max(10, landWidthMeters);
+  const extentY = Math.max(10, landHeightMeters);
+  const hardCap = Math.max(512, Math.min(8192, Math.round(opts.hardCapPx ?? 4096)));
+
+  if (typeof opts.quality === 'number' && Number.isFinite(opts.quality)) {
+    return computeMapTextureCanvasSize(
+      extentX,
+      extentY,
+      Math.max(256, Math.min(hardCap, Math.round(opts.quality))),
+    );
+  }
+
+  const srcW = Math.max(0, Math.round(opts.sourceImageWidth ?? 0));
+  const srcH = Math.max(0, Math.round(opts.sourceImageHeight ?? 0));
+
+  // Preserve exact original pixel dimensions for 1:1 uploaded base maps (scaling down only if > hardCap)
+  if (opts.sourceIsOneToOne && srcW > 0 && srcH > 0) {
+    const maxSrc = Math.max(srcW, srcH);
+    if (maxSrc <= hardCap) {
+      return { widthPx: srcW, heightPx: srcH };
+    }
+    const scale = hardCap / maxSrc;
+    return {
+      widthPx: Math.max(64, Math.round(srcW * scale)),
+      heightPx: Math.max(64, Math.round(srcH * scale)),
+    };
+  }
+
+  let nativeTileMax = 0;
+  if (opts.tileGrid && opts.tileGrid.planeSizeMeters > 0) {
+    const mosaicPx = opts.tileGrid.gridCount * Math.max(64, opts.tilePx ?? 256);
+    const spanPxX = (extentX / opts.tileGrid.planeSizeMeters) * mosaicPx;
+    const spanPxY = (extentY / opts.tileGrid.planeSizeMeters) * mosaicPx;
+    nativeTileMax = Math.round(Math.max(spanPxX, spanPxY));
+  }
+
+  const sourceMax = Math.max(srcW, srcH);
+  const targetMax = Math.min(hardCap, Math.max(2048, nativeTileMax, sourceMax));
+  return computeMapTextureCanvasSize(extentX, extentY, targetMax);
+}
 
 const EARTH_CIRCUMFERENCE_M = 40075016.68557849;
 const EARTH_RADIUS_M = 6378137.0;
@@ -178,16 +294,20 @@ export function computeMapTileGrid(
 }
 
 /**
- * Compute a tile mosaic guaranteed to cover a square land area of `landSizeMeters x landSizeMeters`
+ * Compute a tile mosaic guaranteed to cover a rectangular land area of `landWidthMeters x landHeightMeters`
  * centered at (latDeg, lonDeg), stepping down zoom slightly if needed for very large extents.
  */
 export function computeMapTileGridForExtent(
   latDeg: number,
   lonDeg: number,
   preferredZoom: number,
-  landSizeMeters: number,
+  landWidthMeters: number,
+  landHeightMeters?: number,
 ): MapTileGridSpec {
-  const extent = Math.max(10, Math.min(5000, landSizeMeters));
+  const extent = Math.max(
+    10,
+    Math.min(5000, Math.max(landWidthMeters, landHeightMeters ?? landWidthMeters)),
+  );
   let z = Math.max(1, Math.min(21, Math.round(preferredZoom)));
   const maxRadius = 4; // max 9x9 = 81 tiles per refresh
 
@@ -216,6 +336,8 @@ export interface ElevationQuerySource {
   elevationEnabled?: boolean;
   elevationScale?: number;
   landSizeMeters?: number;
+  landWidthMeters?: number;
+  landHeightMeters?: number;
   elevationGrid?: number[];
   elevationGridSize?: number;
 }
@@ -235,11 +357,14 @@ export function sampleElevationAt(
   if (!grid || n < 2 || grid.length < n * n) return 0;
 
   const scale = source.elevationScale ?? 1;
-  const landSize = Math.max(10, source.landSizeMeters ?? 100);
-  const half = landSize / 2;
+  const base = Math.max(10, source.landSizeMeters ?? 100);
+  const widthX = Math.max(10, source.landWidthMeters ?? base);
+  const heightY = Math.max(10, source.landHeightMeters ?? base);
+  const halfX = widthX / 2;
+  const halfY = heightY / 2;
 
-  const u = Math.max(0, Math.min(1, (xM + half) / landSize));
-  const v = Math.max(0, Math.min(1, (yM + half) / landSize));
+  const u = Math.max(0, Math.min(1, (xM + halfX) / widthX));
+  const v = Math.max(0, Math.min(1, (yM + halfY) / heightY));
 
   const gx = u * (n - 1);
   const gy = v * (n - 1);
@@ -323,45 +448,62 @@ export function parseCoordinateInput(raw: string): { lat: number; lon: number } 
 }
 
 /**
- * Crop a rendered Web Mercator tile mosaic canvas to the exact `landSizeMeters x landSizeMeters`
+ * Crop a rendered Web Mercator tile mosaic canvas to the exact `landWidthMeters x landHeightMeters`
  * region centered at ROS ENU (0, 0) and return a PNG base64 string (without data: prefix).
  */
 export function cropTileMosaicToGroundPngBase64(
   mosaicCanvas: HTMLCanvasElement,
   tileGrid: MapTileGridSpec,
-  landSizeMeters: number,
+  landWidthMeters: number,
   headingDeg = 0,
-  outSizePx = 512,
+  outMaxSizePx: number | 'original' = 'original',
+  landHeightMeters?: number,
 ): string | undefined {
   if (typeof document === 'undefined') return undefined;
   try {
+    const extentX = Math.max(10, landWidthMeters);
+    const extentY = Math.max(10, landHeightMeters ?? extentX);
+    const tilePx = Math.max(64, Math.round(mosaicCanvas.width / Math.max(1, tileGrid.gridCount)));
+    const { widthPx, heightPx } =
+      outMaxSizePx === 'original'
+        ? computeNativeExportResolution(extentX, extentY, {
+            tileGrid,
+            tilePx,
+            quality: 'original',
+          })
+        : computeMapTextureCanvasSize(extentX, extentY, outMaxSizePx);
+
     const outCanvas = document.createElement('canvas');
-    outCanvas.width = outSizePx;
-    outCanvas.height = outSizePx;
+    outCanvas.width = widthPx;
+    outCanvas.height = heightPx;
     const ctx = outCanvas.getContext('2d');
     if (!ctx) return undefined;
 
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+
     const mosaicPx = mosaicCanvas.width;
     const mosaicSpan = Math.max(0.1, tileGrid.planeSizeMeters);
-    const extent = Math.max(10, landSizeMeters);
     const [eastOff, northOff] = tileGrid.centerOffsetEnu;
 
     const u0 = 0.5 - eastOff / mosaicSpan;
     const v0 = 0.5 - northOff / mosaicSpan;
     const cx = u0 * mosaicPx;
     const cy = (1 - v0) * mosaicPx;
-    const spanPx = Math.max(1, (extent / mosaicSpan) * mosaicPx);
-    const scale = outSizePx / spanPx;
+    const spanPxX = Math.max(1, (extentX / mosaicSpan) * mosaicPx);
+    const spanPxY = Math.max(1, (extentY / mosaicSpan) * mosaicPx);
+    const scaleX = widthPx / spanPxX;
+    const scaleY = heightPx / spanPxY;
 
     ctx.fillStyle = '#0f172a';
-    ctx.fillRect(0, 0, outSizePx, outSizePx);
+    ctx.fillRect(0, 0, widthPx, heightPx);
 
     ctx.save();
-    ctx.translate(outSizePx / 2, outSizePx / 2);
+    ctx.translate(widthPx / 2, heightPx / 2);
     if (headingDeg !== 0) {
       ctx.rotate((headingDeg * Math.PI) / 180);
     }
-    ctx.scale(scale, scale);
+    ctx.scale(scaleX, scaleY);
     ctx.drawImage(mosaicCanvas, -cx, -cy);
     ctx.restore();
 
@@ -374,7 +516,7 @@ export function cropTileMosaicToGroundPngBase64(
 }
 
 /**
- * Download and stitch map tiles covering `landSizeMeters x landSizeMeters` around (latitude, longitude)
+ * Download and stitch map tiles covering `landWidthMeters x landHeightMeters` around (latitude, longitude)
  * into a georeferenced PNG base64 texture for Gazebo ground_plane / heightmap export.
  */
 export async function downloadMapTilesTextureBase64(
@@ -384,22 +526,36 @@ export async function downloadMapTilesTextureBase64(
     longitude?: number;
     zoom?: number;
     landSizeMeters?: number;
+    landWidthMeters?: number;
+    landHeightMeters?: number;
     headingDeg?: number;
   },
-  outSizePx = 512,
-): Promise<{ base64: string; loadedCount: number; totalCount: number } | null> {
+  outMaxSizePx: number | 'original' = 'original',
+  highResExport = false,
+): Promise<{
+  base64: string;
+  loadedCount: number;
+  totalCount: number;
+  mosaicCanvas: HTMLCanvasElement;
+  tileGrid: MapTileGridSpec;
+  widthPx: number;
+  heightPx: number;
+} | null> {
   if (typeof document === 'undefined' || typeof Image === 'undefined') {
     return null;
   }
 
   const lat = mapBg.latitude ?? DEFAULT_MAP_BACKGROUND.latitude;
   const lon = mapBg.longitude ?? DEFAULT_MAP_BACKGROUND.longitude;
-  const zoom = mapBg.zoom ?? DEFAULT_MAP_BACKGROUND.zoom;
-  const landSize = Math.max(10, mapBg.landSizeMeters ?? DEFAULT_MAP_BACKGROUND.landSizeMeters);
+  const rawZoom = mapBg.zoom ?? DEFAULT_MAP_BACKGROUND.zoom;
+  const effectiveZoom = highResExport && rawZoom < 20 ? Math.min(20, rawZoom + 1) : rawZoom;
+  const base = Math.max(10, mapBg.landSizeMeters ?? DEFAULT_MAP_BACKGROUND.landSizeMeters);
+  const landW = Math.max(10, mapBg.landWidthMeters ?? base);
+  const landH = Math.max(10, mapBg.landHeightMeters ?? base);
   const headingDeg = mapBg.headingDeg ?? 0;
   const template = (mapBg.tileUrl ?? '').trim() || DEFAULT_MAP_BACKGROUND.tileUrl;
 
-  const tileGrid = computeMapTileGridForExtent(lat, lon, zoom, landSize);
+  const tileGrid = computeMapTileGridForExtent(lat, lon, effectiveZoom, landW, landH);
   const tilePx = 256;
   const sizePx = tileGrid.gridCount * tilePx;
   const mosaicCanvas = document.createElement('canvas');
@@ -407,6 +563,9 @@ export async function downloadMapTilesTextureBase64(
   mosaicCanvas.height = sizePx;
   const ctx = mosaicCanvas.getContext('2d');
   if (!ctx) return null;
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
 
   // Draw coordinate grid base layer so even partial/offline tile loads produce a clean texture
   ctx.fillStyle = '#0f172a';
@@ -460,18 +619,32 @@ export async function downloadMapTilesTextureBase64(
     ),
   );
 
+  const dims =
+    outMaxSizePx === 'original'
+      ? computeNativeExportResolution(landW, landH, {
+          tileGrid,
+          tilePx,
+          quality: 'original',
+        })
+      : computeMapTextureCanvasSize(landW, landH, outMaxSizePx);
+
   const base64 = cropTileMosaicToGroundPngBase64(
     mosaicCanvas,
     tileGrid,
-    landSize,
+    landW,
     headingDeg,
-    outSizePx,
+    outMaxSizePx,
+    landH,
   );
   if (!base64) return null;
   return {
     base64,
     loadedCount,
     totalCount: tileGrid.cells.length,
+    mosaicCanvas,
+    tileGrid,
+    widthPx: dims.widthPx,
+    heightPx: dims.heightPx,
   };
 }
 

@@ -54,6 +54,7 @@ import { ROBOFORGE_DRAG_MIME, type LibraryDragPayload } from '@/core/dragTypes';
 import {
   computeElevationStats,
   DEFAULT_MAP_BACKGROUND,
+  getMapLandSize,
   sampleElevationAt,
 } from '@/core/mapTiles';
 import type { Project, Sensor, WorldObject } from '@/core/schema';
@@ -903,12 +904,13 @@ function MujocoSceneContent({
       />
 
       {(() => {
-        const mapLandSize = project.world.mapBackground?.enabled
-          ? (project.world.mapBackground.landSizeMeters ?? DEFAULT_MAP_BACKGROUND.landSizeMeters)
+        const landDims = getMapLandSize(project.world.mapBackground, project.world.ground.size);
+        const mapLandMax = project.world.mapBackground?.enabled
+          ? Math.max(landDims.width, landDims.height)
           : 20;
         const gridExtent = Math.max(
           50,
-          mapLandSize,
+          mapLandMax,
           project.world.ground.size[0],
           project.world.ground.size[1],
         );
@@ -1309,10 +1311,7 @@ export function MujocoViewport() {
       4,
       Math.min(96, Math.round(mapBg?.terrainSegments ?? DEFAULT_MAP_BACKGROUND.terrainSegments)),
     );
-    const landSize = Math.max(
-      10,
-      mapBg?.landSizeMeters ?? DEFAULT_MAP_BACKGROUND.landSizeMeters,
-    );
+    const landDims = getMapLandSize(mapBg, project.world.ground.size);
     const source = mapBg?.elevationSource ?? 'terrarium';
 
     if (source === 'heightmap') {
@@ -1335,10 +1334,11 @@ export function MujocoViewport() {
     fetchTerrariumElevationGrid(
       mapBg?.latitude ?? DEFAULT_MAP_BACKGROUND.latitude,
       mapBg?.longitude ?? DEFAULT_MAP_BACKGROUND.longitude,
-      landSize,
+      landDims.width,
       segments,
       mapBg?.elevationUrl ?? DEFAULT_MAP_BACKGROUND.elevationUrl,
       15,
+      landDims.height,
     ).then((res) => {
       if (!active || !res) return;
       setTerrainElevation(res.relativeGrid, res.gridSize, res.centerElevation);
@@ -1355,10 +1355,13 @@ export function MujocoViewport() {
     mapBg?.latitude,
     mapBg?.longitude,
     mapBg?.landSizeMeters,
+    mapBg?.landWidthMeters,
+    mapBg?.landHeightMeters,
     mapBg?.terrainSegments,
     mapBg?.heightmapBase64,
     mapBg?.heightmapMimeType,
     mapBg?.heightmapMaxHeight,
+    project.world.ground.size,
     setTerrainElevation,
   ]);
 

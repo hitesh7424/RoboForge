@@ -1,10 +1,20 @@
 import { useMemo } from 'react';
-import { AlertCircle, AlertTriangle, CheckCircle2, PanelBottomClose, Trash2 } from 'lucide-react';
+import {
+  AlertCircle,
+  AlertTriangle,
+  CheckCircle2,
+  PanelBottomClose,
+  Star,
+  Trash2,
+} from 'lucide-react';
 import { resolveLinkInertia } from '@/core/inertia';
 import { validateProject, type ValidationIssue } from '@/core/schema';
 import { useRoboForgeStore } from '@/core/store';
 import { Button } from '@/ui/components/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/ui/components/tabs';
+
+const GITHUB_REPO_URL =
+  import.meta.env.VITE_GITHUB_URL || 'https://github.com/roboforge/roboforge';
 
 export function ValidationPanel() {
   const project = useRoboForgeStore((s) => s.project);
@@ -91,7 +101,21 @@ export function ValidationPanel() {
             </div>
           </div>
 
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1.5">
+            <a
+              href={GITHUB_REPO_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              data-testid="github-star-link"
+              title="Visit GitHub to star RoboForge"
+              className="hidden sm:inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] text-slate-400 hover:bg-[#1a2233] hover:text-slate-100 transition-colors"
+            >
+              <span>Made with ❤️</span>
+              <span className="text-slate-600" aria-hidden="true">·</span>
+              <Star className="h-3 w-3 text-amber-400" />
+              <span>Star on GitHub</span>
+            </a>
+            <div className="hidden sm:block h-3.5 w-px bg-[#232b3b]" aria-hidden="true" />
             <Button
               type="button"
               variant="ghost"

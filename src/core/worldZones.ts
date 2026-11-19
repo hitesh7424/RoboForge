@@ -344,32 +344,38 @@ export function computeZoneAreaMeters2(zone: SurfaceZone): number {
 }
 
 /**
- * Maps a ROS world coordinate (x = East, y = North) within [-landSize/2, +landSize/2]
+ * Maps a ROS world coordinate (x = East, y = North) within [-landWidth/2, +landWidth/2] x [-landHeight/2, +landHeight/2]
  * to a top-down texture canvas pixel coordinate [px, py] where py=0 is North (+Y).
  */
 export function rosToGroundTexturePixel(
   rx: number,
   ry: number,
-  landSize: number,
-  canvasSizePx: number,
+  landWidth: number,
+  canvasWidthPx: number,
+  landHeight = landWidth,
+  canvasHeightPx = canvasWidthPx,
 ): [number, number] {
-  const safeLand = Math.max(1, landSize);
-  const u = (rx + safeLand / 2) / safeLand;
-  const v = 1 - (ry + safeLand / 2) / safeLand;
-  return [u * canvasSizePx, v * canvasSizePx];
+  const safeW = Math.max(1, landWidth);
+  const safeH = Math.max(1, landHeight);
+  const u = (rx + safeW / 2) / safeW;
+  const v = 1 - (ry + safeH / 2) / safeH;
+  return [u * canvasWidthPx, v * canvasHeightPx];
 }
 
 /** Inverse of rosToGroundTexturePixel. */
 export function groundTexturePixelToRos(
   px: number,
   py: number,
-  landSize: number,
-  canvasSizePx: number,
+  landWidth: number,
+  canvasWidthPx: number,
+  landHeight = landWidth,
+  canvasHeightPx = canvasWidthPx,
 ): [number, number] {
-  const safePx = Math.max(1, canvasSizePx);
-  const u = px / safePx;
-  const v = py / safePx;
-  const rx = u * landSize - landSize / 2;
-  const ry = (1 - v) * landSize - landSize / 2;
+  const safePxW = Math.max(1, canvasWidthPx);
+  const safePxH = Math.max(1, canvasHeightPx);
+  const u = px / safePxW;
+  const v = py / safePxH;
+  const rx = u * landWidth - landWidth / 2;
+  const ry = (1 - v) * landHeight - landHeight / 2;
   return [rx, ry];
 }

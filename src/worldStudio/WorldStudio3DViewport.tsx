@@ -4,7 +4,7 @@ import { Grid, Line, TransformControls } from '@react-three/drei';
 import { Check, Crosshair, Move, RotateCw, Scaling, X } from 'lucide-react';
 import * as THREE from 'three';
 import { poseToRosMatrix, quaternionToRosRpy } from '@/core/coords';
-import { DEFAULT_MAP_BACKGROUND, sampleElevationAt } from '@/core/mapTiles';
+import { DEFAULT_MAP_BACKGROUND, getMapLandSize, sampleElevationAt } from '@/core/mapTiles';
 import type { MapBackground, SurfaceZone, WorldObject } from '@/core/schema';
 import {
   useRoboForgeStore,
@@ -191,12 +191,10 @@ function WorldStudioScene3D({
   } | null>(null);
 
   const mapBg = project.world.mapBackground ?? DEFAULT_MAP_BACKGROUND;
-  const landSize = Math.max(
-    10,
-    mapBg.enabled
-      ? (mapBg.landSizeMeters ?? DEFAULT_MAP_BACKGROUND.landSizeMeters)
-      : Math.max(project.world.ground.size[0], project.world.ground.size[1]),
-  );
+  const landDims = getMapLandSize(project.world.mapBackground, project.world.ground.size);
+  const landWidth = landDims.width;
+  const landHeight = landDims.height;
+  const landSize = Math.max(landWidth, landHeight);
 
   const cosmetics = { ...DEFAULT_WORLD_COSMETICS, ...project.world.cosmetics };
   const sky = useMemo(() => getSkyAtmospherePalette(cosmetics), [cosmetics]);
@@ -525,7 +523,7 @@ function WorldStudioScene3D({
       {/* Subtle Ground Grid Overlay */}
       {showGrid && (
         <Grid
-          args={[landSize, landSize]}
+          args={[landWidth, landHeight]}
           cellSize={2}
           sectionSize={10}
           cellColor="#64748b"

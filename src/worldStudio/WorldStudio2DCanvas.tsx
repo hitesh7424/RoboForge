@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, Maximize2, X, ZoomIn, ZoomOut } from 'lucide-react';
 import {
+  computeMapTextureCanvasSize,
   computeMapTileGridForExtent,
   DEFAULT_MAP_BACKGROUND,
   formatTileUrl,
+  getMapLandSize,
   sampleElevationAt,
 } from '@/core/mapTiles';
 import type { SurfaceZone, WorldObject } from '@/core/schema';
@@ -123,11 +125,9 @@ export function WorldStudio2DCanvas({
   const didAutoFitRef = useRef(false);
 
   const mapBg = project.world.mapBackground ?? DEFAULT_MAP_BACKGROUND;
-  const landSize = Math.max(
-    10,
-    mapBg.enabled
-      ? (mapBg.landSizeMeters ?? DEFAULT_MAP_BACKGROUND.landSizeMeters)
-      : Math.max(project.world.ground.size[0], project.world.ground.size[1]),
+  const { width: landWidth, height: landHeight } = getMapLandSize(
+    project.world.mapBackground,
+    project.world.ground.size,
   );
 
   const selectedObjectId = selection?.type === 'worldObject' ? selection.id : null;
@@ -135,8 +135,15 @@ export function WorldStudio2DCanvas({
   const selectedLightId = selection?.type === 'worldLight' ? selection.id : null;
 
   const tileGrid = useMemo(
-    () => computeMapTileGridForExtent(mapBg.latitude, mapBg.longitude, mapBg.zoom, landSize),
-    [mapBg.latitude, mapBg.longitude, mapBg.zoom, landSize],
+    () =>
+      computeMapTileGridForExtent(
+        mapBg.latitude,
+        mapBg.longitude,
+        mapBg.zoom,
+        landWidth,
+        landHeight,
+      ),
+    [mapBg.latitude, mapBg.longitude, mapBg.zoom, landWidth, landHeight],
   );
 
   const snapCoord = useCallback(
@@ -147,21 +154,30 @@ export function WorldStudio2DCanvas({
     [snapEnabled, snapStep],
   );
 
-  const clampToLand = useCallback(
+  const clampToLandX = useCallback(
     (v: number): number => {
-      const half = landSize / 2;
+      const half = landWidth / 2;
       return Math.max(-half, Math.min(half, v));
     },
-    [landSize],
+    [landWidth],
+  );
+
+  const clampToLandY = useCallback(
+    (v: number): number => {
+      const half = landHeight / 2;
+      return Math.max(-half, Math.min(half, v));
+    },
+    [landHeight],
   );
 
   const fitLandView = useCallback(() => {
-    const w = hostRef.current?.clientWidth ?? canvasSize.w;
-    const h = hostRef.current?.clientHeight ?? canvasSize.h;
-    const minDim = Math.max(220, Math.min(w, h));
+    const w = Math.max(220, hostRef.current?.clientWidth ?? canvasSize.w);
+    const h = Math.max(220, hostRef.current?.clientHeight ?? canvasSize.h);
     setViewCenter([0, 0]);
-    setPxPerMeter(Math.max(0.25, (minDim * 0.84) / landSize));
-  }, [landSize, canvasSize.w, canvasSize.h]);
+    const scaleX = (w * 0.84) / landWidth;
+    const scaleY = (h * 0.84) / landHeight;
+    setPxPerMeter(Math.max(0.25, Math.min(scaleX, scaleY)));
+  }, [landWidth, landHeight, canvasSize.w, canvasSize.h]);
 
   // Observe container size
   useEffect(() => {
@@ -173,15 +189,16 @@ export function WorldStudio2DCanvas({
       setCanvasSize({ w, h });
       if (!didAutoFitRef.current && w > 180 && h > 180) {
         didAutoFitRef.current = true;
-        const minDim = Math.min(w, h);
-        setPxPerMeter(Math.max(0.25, (minDim * 0.84) / landSize));
+        const scaleX = (w * 0.84) / landWidth;
+        const scaleY = (h * 0.84) / landHeight;
+        setPxPerMeter(Math.max(0.25, Math.min(scaleX, scaleY)));
       }
     };
     update();
     const ro = new ResizeObserver(update);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [landSize]);
+  }, [landWidth, landHeight]);
 
   // Clear multi-point draft when switching tools
   useEffect(() => {
@@ -242,18 +259,23 @@ export function WorldStudio2DCanvas({
 
   // Re-composite the multi-texture ground map whenever zones, base preset, textures, or satellite tiles update
   useEffect(() => {
-    const sizePx = 768;
-    if (!compositeCanvasRef.current || compositeCanvasRef.current.width !== sizePx) {
+    const { widthPx, heightPx } = computeMapTextureCanvasSize(landWidth, landHeight, 768);
+    if (
+      !compositeCanvasRef.current ||
+      compositeCanvasRef.current.width !== widthPx ||
+      compositeCanvasRef.current.height !== heightPx
+    ) {
       const c = document.createElement('canvas');
-      c.width = sizePx;
-      c.height = sizePx;
+      c.width = widthPx;
+      c.height = heightPx;
       compositeCanvasRef.current = c;
     }
     renderCompositeGroundCanvas({
       world: project.world,
       textures: project.textures,
       canvas: compositeCanvasRef.current,
-      landSize,
+      landSize: landWidth,
+      landHeight,
       satelliteMosaic: satelliteCanvasRef.current,
       tileGrid,
       onAssetImageLoaded: () => setAssetTick((t) => t + 1),
@@ -267,10 +289,11 @@ export function WorldStudio2DCanvas({
         const b64 = exportCompositeGroundPngBase64(
           project.world,
           project.textures,
-          landSize,
+          landWidth,
           satelliteCanvasRef.current,
           tileGrid,
-          512,
+          1024,
+          landHeight,
         );
         if (b64) {
           useRoboForgeStore.getState().setMapTileTexture(b64);
@@ -279,7 +302,7 @@ export function WorldStudio2DCanvas({
     }, 450);
 
     return () => globalThis.clearTimeout(timer);
-  }, [project.world, project.textures, landSize, mosaicRev, tileGrid, assetTick]);
+  }, [project.world, project.textures, landWidth, landHeight, mosaicRev, tileGrid, assetTick]);
 
   const rosToCanvas = useCallback(
     (xM: number, yM: number): [number, number] => [
@@ -457,12 +480,12 @@ export function WorldStudio2DCanvas({
     ctx.fillRect(0, 0, canvasSize.w, canvasSize.h);
 
     // Draw composited multi-texture ground map inside the exact Land Extent
-    const halfLand = landSize / 2;
-    const [landLx, landTy] = rosToCanvas(-halfLand, halfLand);
-    const landPx = landSize * pxPerMeter;
+    const [landLx, landTy] = rosToCanvas(-landWidth / 2, landHeight / 2);
+    const landPxW = landWidth * pxPerMeter;
+    const landPxH = landHeight * pxPerMeter;
     const comp = compositeCanvasRef.current;
     if (comp) {
-      ctx.drawImage(comp, landLx, landTy, landPx, landPx);
+      ctx.drawImage(comp, landLx, landTy, landPxW, landPxH);
     }
 
     // Optional metric grid
@@ -498,7 +521,7 @@ export function WorldStudio2DCanvas({
     ctx.strokeStyle = 'rgba(52, 211, 153, 0.72)';
     ctx.lineWidth = 1.5;
     ctx.setLineDash([6, 4]);
-    ctx.strokeRect(landLx, landTy, landPx, landPx);
+    ctx.strokeRect(landLx, landTy, landPxW, landPxH);
     ctx.setLineDash([]);
 
     // Draw subtle zone borders & handles for Surface Zones
@@ -792,7 +815,8 @@ export function WorldStudio2DCanvas({
     canvasSize,
     viewCenter,
     pxPerMeter,
-    landSize,
+    landWidth,
+    landHeight,
     showGrid,
     project.world,
     project.textures,
@@ -901,8 +925,8 @@ export function WorldStudio2DCanvas({
     }
 
     if (tool === 'zone_rect') {
-      const cx0 = clampToLand(rx);
-      const cy0 = clampToLand(ry);
+      const cx0 = clampToLandX(rx);
+      const cy0 = clampToLandY(ry);
       e.currentTarget.setPointerCapture(e.pointerId);
       dragRef.current = { type: 'drawRect', startRos: [cx0, cy0], endRos: [cx0, cy0] };
       setDraftPreview({ kind: 'rect', p1: [cx0, cy0], p2: [cx0, cy0] });
@@ -910,8 +934,8 @@ export function WorldStudio2DCanvas({
     }
 
     if (tool === 'zone_circle' || tool === 'tree') {
-      const cx0 = tool === 'zone_circle' ? clampToLand(rx) : rx;
-      const cy0 = tool === 'zone_circle' ? clampToLand(ry) : ry;
+      const cx0 = tool === 'zone_circle' ? clampToLandX(rx) : rx;
+      const cy0 = tool === 'zone_circle' ? clampToLandY(ry) : ry;
       e.currentTarget.setPointerCapture(e.pointerId);
       const defR = tool === 'tree' ? treeRadius : brush.circleRadius;
       dragRef.current = {
@@ -934,15 +958,15 @@ export function WorldStudio2DCanvas({
           return;
         }
       }
-      const px0 = tool === 'zone_poly' ? clampToLand(rx) : rx;
-      const py0 = tool === 'zone_poly' ? clampToLand(ry) : ry;
+      const px0 = tool === 'zone_poly' ? clampToLandX(rx) : rx;
+      const py0 = tool === 'zone_poly' ? clampToLandY(ry) : ry;
       setDraftPoints((prev) => [...prev, [px0, py0]]);
       return;
     }
 
     if (tool === 'zone_path' || tool === 'wall') {
-      const px0 = tool === 'zone_path' ? clampToLand(rx) : rx;
-      const py0 = tool === 'zone_path' ? clampToLand(ry) : ry;
+      const px0 = tool === 'zone_path' ? clampToLandX(rx) : rx;
+      const py0 = tool === 'zone_path' ? clampToLandY(ry) : ry;
       setDraftPoints((prev) => [...prev, [px0, py0]]);
       return;
     }
@@ -1066,8 +1090,8 @@ export function WorldStudio2DCanvas({
       const dyM = (cy - drag.startPx[1]) / pxPerMeter;
       setViewCenter([drag.origCenter[0] - dxM, drag.origCenter[1] + dyM]);
     } else if (drag.type === 'drawRect') {
-      const cx1 = clampToLand(rx);
-      const cy1 = clampToLand(ry);
+      const cx1 = clampToLandX(rx);
+      const cy1 = clampToLandY(ry);
       drag.endRos = [cx1, cy1];
       setDraftPreview({ kind: 'rect', p1: drag.startRos, p2: [cx1, cy1] });
     } else if (drag.type === 'drawCircle') {
@@ -1292,7 +1316,7 @@ export function WorldStudio2DCanvas({
         <div className="rounded border border-[#242e40] bg-[#0d121c]/90 px-2 py-1 font-mono text-[10px] text-slate-300 tabular-nums">
           {hoverRos
             ? `X: ${hoverRos[0].toFixed(1)}m  Y: ${hoverRos[1].toFixed(1)}m  Z: ${sampleElevationAt(mapBg, hoverRos[0], hoverRos[1]).toFixed(1)}m`
-            : `Extent: ${landSize}m × ${landSize}m`}
+            : `Extent: ${Math.round(landWidth)}m × ${Math.round(landHeight)}m`}
         </div>
 
         <div className="pointer-events-auto flex items-center gap-1 rounded border border-[#242e40] bg-[#0d121c]/95 p-0.5">

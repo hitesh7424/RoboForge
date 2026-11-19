@@ -1,6 +1,12 @@
-import { useState, useRef, type ChangeEvent } from 'react';
-import { Check, Copy, Download, RotateCcw, Upload } from 'lucide-react';
-import { clearAutosavedProject, parseProjectJson, serializeProject } from '@/core/persistence';
+import { useMemo, useRef, useState, type ChangeEvent } from 'react';
+import { Bot, Check, Copy, Download, Globe, Layers, RotateCcw, Upload } from 'lucide-react';
+import {
+  clearAutosavedProject,
+  getScopedJsonFilename,
+  parseScopedProjectJson,
+  serializeScopedProject,
+  type JsonExportScope,
+} from '@/core/persistence';
 import { useRoboForgeStore } from '@/core/store';
 import { Button } from '@/ui/components/button';
 import {
@@ -11,6 +17,32 @@ import {
   DialogTitle,
 } from '@/ui/components/dialog';
 
+const JSON_SCOPE_OPTIONS: {
+  id: JsonExportScope;
+  label: string;
+  subtitle: string;
+  icon: typeof Layers;
+}[] = [
+  {
+    id: 'full',
+    label: 'Full',
+    subtitle: 'Robot Model + World',
+    icon: Layers,
+  },
+  {
+    id: 'model',
+    label: 'Model',
+    subtitle: 'Robot, Meshes & Textures',
+    icon: Bot,
+  },
+  {
+    id: 'world',
+    label: 'World',
+    subtitle: 'Map, Zones & Obstacles',
+    icon: Globe,
+  },
+];
+
 export function ProjectModal() {
   const isOpen = useRoboForgeStore((s) => s.isJsonModalOpen);
   const project = useRoboForgeStore((s) => s.project);
@@ -19,25 +51,30 @@ export function ProjectModal() {
   const resetProject = useRoboForgeStore((s) => s.resetProject);
   const addLog = useRoboForgeStore((s) => s.addLog);
 
+  const [exportScope, setExportScope] = useState<JsonExportScope>('full');
   const [jsonInput, setJsonInput] = useState('');
   const [importError, setImportError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const serialized = serializeProject(project);
+  const serialized = useMemo(
+    () => serializeScopedProject(project, exportScope),
+    [project, exportScope],
+  );
+  const downloadFilename = getScopedJsonFilename(project, exportScope);
 
   const handleDownloadJson = () => {
     const blob = new Blob([serialized], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `${project.name || 'roboforge_project'}.roboforge.json`;
+    link.download = downloadFilename;
     document.body.appendChild(link);
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
-    addLog('info', `Downloaded project JSON (${project.name}.roboforge.json).`);
+    addLog('info', `Downloaded ${exportScope} JSON (${downloadFilename}).`);
   };
 
   const handleCopyJson = async () => {
@@ -51,15 +88,19 @@ export function ProjectModal() {
   };
 
   const handleImportText = (raw: string) => {
-    const result = parseProjectJson(raw);
+    const result = parseScopedProjectJson(raw, project);
     if (!result.ok) {
       setImportError(result.error);
       return;
     }
     setImportError(null);
-    loadProject(result.project, {
-      logMessage: `Imported project "${result.project.name}" from JSON.`,
-    });
+    const logMessage =
+      result.scope === 'model'
+        ? `Imported robot model "${result.project.robot.name}" from JSON (world preserved).`
+        : result.scope === 'world'
+          ? `Imported world "${result.project.world.name}" from JSON (robot model preserved).`
+          : `Imported full project "${result.project.name}" from JSON.`;
+    loadProject(result.project, { logMessage });
     setJsonInput('');
     setJsonModalOpen(false);
   };
@@ -95,16 +136,69 @@ export function ProjectModal() {
         <DialogHeader>
           <DialogTitle>Project Save / Load JSON</DialogTitle>
           <DialogDescription>
-            Export the single-source-of-truth Project JSON, import a saved file, or reset the
-            workspace. Changes are also autosaved locally to IndexedDB.
+            Export the Full project, Robot Model only, or World only as JSON, or import any saved
+            JSON file. Changes are also autosaved locally to IndexedDB.
           </DialogDescription>
         </DialogHeader>
 
+        {/* Export JSON Scope Selector: Full vs Model vs World */}
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between text-[11px] text-slate-400">
+            <span className="font-medium text-slate-300">JSON Export Scope</span>
+            <span className="font-mono text-[10px] text-slate-400 truncate max-w-[280px]">
+              {downloadFilename}
+            </span>
+          </div>
+          <div
+            role="radiogroup"
+            aria-label="Project JSON export scope"
+            className="grid grid-cols-3 gap-2"
+          >
+            {JSON_SCOPE_OPTIONS.map((opt) => {
+              const Icon = opt.icon;
+              const active = exportScope === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  data-testid={`project-json-scope-${opt.id}`}
+                  onClick={() => setExportScope(opt.id)}
+                  className={`flex items-center gap-2 rounded-md border px-2.5 py-2 text-left transition-colors cursor-pointer ${
+                    active
+                      ? 'border-blue-500 bg-blue-600/15 text-slate-100'
+                      : 'border-[#232b3b] bg-[#0d1118] text-slate-400 hover:border-[#34415a] hover:text-slate-200'
+                  }`}
+                >
+                  <Icon
+                    className={`h-4 w-4 shrink-0 ${active ? 'text-blue-400' : 'text-slate-500'}`}
+                  />
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold leading-tight">{opt.label}</div>
+                    <div className="truncate text-[10px] text-slate-400">{opt.subtitle}</div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         <div className="flex flex-wrap items-center justify-between gap-2 border-y border-[#232b3b] py-3">
           <div className="flex items-center gap-2">
-            <Button type="button" variant="default" size="sm" onClick={handleDownloadJson}>
+            <Button
+              type="button"
+              variant="default"
+              size="sm"
+              onClick={handleDownloadJson}
+              data-testid="project-download-json"
+            >
               <Download className="h-3.5 w-3.5" />
-              Download JSON
+              {exportScope === 'model'
+                ? 'Download Model JSON'
+                : exportScope === 'world'
+                  ? 'Download World JSON'
+                  : 'Download Full JSON'}
             </Button>
             <Button type="button" variant="secondary" size="sm" onClick={handleCopyJson}>
               {copied ? (
@@ -165,7 +259,7 @@ export function ProjectModal() {
 
         <div className="space-y-2">
           <label htmlFor="import-json-textarea" className="text-xs font-medium text-slate-300">
-            Paste Project JSON to Import
+            Paste Full, Model, or World JSON to Import
           </label>
           <textarea
             id="import-json-textarea"

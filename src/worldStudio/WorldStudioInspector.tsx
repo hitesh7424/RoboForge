@@ -1,9 +1,10 @@
-import { useMemo, useRef } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
   Box,
   Copy,
+  Download,
   Eye,
   EyeOff,
   Globe,
@@ -11,8 +12,10 @@ import {
   Layers,
   Lightbulb,
   Sparkles,
+  Star,
   Trash2,
   Trees,
+  Upload,
 } from 'lucide-react';
 import type { SurfaceZone } from '@/core/schema';
 import { useRoboForgeStore } from '@/core/store';
@@ -22,12 +25,16 @@ import {
   getTexturePresetById,
   materializePresetAsTextureAsset,
 } from '@/core/texturePresets';
+import { downloadFullMapAreaPng } from '@/core/worldTextureCompositor';
 import {
   computeZoneAreaMeters2,
   createRectZonePoints,
   DEFAULT_WORLD_COSMETICS,
 } from '@/core/worldZones';
 import { hexToRgba, readFileAsTextureAsset, rgbaToHex } from '@/worldStudio/types';
+
+const GITHUB_REPO_URL =
+  import.meta.env.VITE_GITHUB_URL || 'https://github.com/roboforge/roboforge';
 
 export function WorldStudioInspector() {
   const project = useRoboForgeStore((s) => s.project);
@@ -48,7 +55,8 @@ export function WorldStudioInspector() {
   const addLog = useRoboForgeStore((s) => s.addLog);
 
   const inlineUploadRef = useRef<HTMLInputElement | null>(null);
-  const uploadTargetRef = useRef<'zone' | 'object' | 'ground'>('zone');
+  const uploadTargetRef = useRef<'zone' | 'object' | 'ground' | 'ground_1to1'>('zone');
+  const [downloadingMapPng, setDownloadingMapPng] = useState(false);
 
   const zones = project.world.surfaceZones ?? [];
   const objects = project.world.objects;
@@ -107,10 +115,11 @@ export function WorldStudioInspector() {
             o.source.material.rgba = [1, 1, 1, o.source.material.rgba[3]];
           }
         });
-      } else if (uploadTargetRef.current === 'ground') {
+      } else if (uploadTargetRef.current === 'ground' || uploadTargetRef.current === 'ground_1to1') {
+        const isOneToOne = uploadTargetRef.current === 'ground_1to1';
         updateWorld((w) => {
           w.ground.textureId = asset.id;
-          w.ground.textureRepeat = w.ground.textureRepeat ?? [10, 10];
+          w.ground.textureRepeat = isOneToOne ? [1, 1] : (w.ground.textureRepeat ?? [10, 10]);
         });
         updateWorldCosmetics((c) => {
           c.groundBasePresetId = undefined;
@@ -118,6 +127,24 @@ export function WorldStudioInspector() {
       }
     } catch (err) {
       addLog('error', err instanceof Error ? err.message : 'Failed to upload custom texture.');
+    }
+  };
+
+  const handleDownloadMapPng = async () => {
+    setDownloadingMapPng(true);
+    try {
+      const res = await downloadFullMapAreaPng(project.world, project.textures, 'original');
+      addLog(
+        'info',
+        `Downloaded full-quality map tile "${res.filename}" (${res.widthPx}×${res.heightPx}px covering ${res.landWidth}m×${res.landHeight}m).`,
+      );
+    } catch (err) {
+      addLog(
+        'error',
+        `Map PNG download failed: ${err instanceof Error ? err.message : 'unknown error'}`,
+      );
+    } finally {
+      setDownloadingMapPng(false);
     }
   };
 
@@ -568,7 +595,7 @@ export function WorldStudioInspector() {
                 <input
                   type="number"
                   min={0.5}
-                  max={64}
+                  max={500}
                   step={1}
                   value={selectedZone.repeat[0]}
                   onChange={(e) =>
@@ -584,7 +611,7 @@ export function WorldStudioInspector() {
                 <input
                   type="number"
                   min={0.5}
-                  max={64}
+                  max={500}
                   step={1}
                   value={selectedZone.repeat[1]}
                   onChange={(e) =>
@@ -997,6 +1024,31 @@ export function WorldStudioInspector() {
               Upload Custom Base Ground Image
             </button>
 
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                disabled={downloadingMapPng}
+                data-testid="inspector-download-map-png"
+                onClick={() => void handleDownloadMapPng()}
+                className="flex items-center justify-center gap-1 rounded border border-emerald-700/60 bg-emerald-950/35 py-1.5 text-[10px] font-medium text-emerald-200 hover:bg-emerald-900/50 disabled:opacity-50 cursor-pointer"
+              >
+                <Download className="h-3 w-3 shrink-0" />
+                {downloadingMapPng ? 'Saving...' : 'Download Map PNG'}
+              </button>
+              <button
+                type="button"
+                data-testid="inspector-upload-edited-map"
+                onClick={() => {
+                  uploadTargetRef.current = 'ground_1to1';
+                  inlineUploadRef.current?.click();
+                }}
+                className="flex items-center justify-center gap-1 rounded border border-[#2a3346] bg-[#141b28] py-1.5 text-[10px] font-medium text-slate-200 hover:bg-[#1e283b] cursor-pointer"
+              >
+                <Upload className="h-3 w-3 shrink-0 text-sky-400" />
+                Load Edited (1:1)
+              </button>
+            </div>
+
             <div className="rounded-md border border-[#243044] bg-[#0b0f17] p-2.5 space-y-2">
               <div className="text-[11px] font-medium text-slate-200 flex items-center gap-1.5">
                 <Sparkles className="h-3.5 w-3.5 text-amber-400" />
@@ -1015,6 +1067,23 @@ export function WorldStudioInspector() {
             </div>
           </div>
         )}
+      </div>
+
+      {/* Subtle Non-Intrusive Docked Footer */}
+      <div className="flex items-center justify-center border-t border-[#1d2433] bg-[#0c1018] px-3 py-1.5 shrink-0">
+        <a
+          href={GITHUB_REPO_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          data-testid="studio-github-star-link"
+          title="Visit GitHub to star RoboForge"
+          className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] text-slate-400 hover:bg-[#161e2e] hover:text-slate-100 transition-colors"
+        >
+          <span>Made with ❤️</span>
+          <span className="text-slate-600" aria-hidden="true">·</span>
+          <Star className="h-3 w-3 text-amber-400" />
+          <span>Star on GitHub</span>
+        </a>
       </div>
     </aside>
   );

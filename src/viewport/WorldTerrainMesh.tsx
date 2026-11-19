@@ -2,10 +2,12 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useThree, type ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
 import {
+  computeMapTextureCanvasSize,
   computeMapTileGridForExtent,
   cropTileMosaicToGroundPngBase64,
   DEFAULT_MAP_BACKGROUND,
   formatTileUrl,
+  getMapLandSize,
   type MapTileGridSpec,
 } from '@/core/mapTiles';
 import type { Project, SurfaceZone, TextureAsset, World, WorldCosmetics } from '@/core/schema';
@@ -23,9 +25,10 @@ export function useMapTileMosaicTexture(
   enabled: boolean,
   tileUrl: string,
   tileGrid: MapTileGridSpec,
-  landSizeMeters = 100,
+  landWidthMeters = 100,
   headingDeg = 0,
   skipAutoSync = false,
+  landHeightMeters?: number,
 ): { texture: THREE.CanvasTexture | null; canvas: HTMLCanvasElement | null; revision: number } {
   const invalidate = useThree((s) => s.invalidate);
   const [texture, setTexture] = useState<THREE.CanvasTexture | null>(null);
@@ -80,9 +83,10 @@ export function useMapTileMosaicTexture(
       const b64 = cropTileMosaicToGroundPngBase64(
         canvas,
         tileGrid,
-        landSizeMeters,
+        landWidthMeters,
         headingDeg,
-        512,
+        1024,
+        landHeightMeters,
       );
       if (b64) {
         useRoboForgeStore.getState().setMapTileTexture(b64);
@@ -127,7 +131,7 @@ export function useMapTileMosaicTexture(
       }
       tex.dispose();
     };
-  }, [enabled, tileUrl, tileGrid, landSizeMeters, headingDeg, skipAutoSync, invalidate]);
+  }, [enabled, tileUrl, tileGrid, landWidthMeters, landHeightMeters, headingDeg, skipAutoSync, invalidate]);
 
   return { texture, canvas: canvasEl, revision };
 }
@@ -165,12 +169,7 @@ export function WorldGroundTerrainMesh({
   const customGroundTex = useTextureAsset(assignedTexture, ground.textureRepeat ?? [8, 8]);
 
   const mapEnabled = Boolean(mapBackground?.enabled);
-  const landSize = Math.max(
-    10,
-    mapEnabled
-      ? (mapBackground?.landSizeMeters ?? DEFAULT_MAP_BACKGROUND.landSizeMeters)
-      : Math.max(ground.size[0], ground.size[1]),
-  );
+  const { width: landWidth, height: landHeight } = getMapLandSize(mapBackground, ground.size);
   const segments = Math.max(
     4,
     Math.min(96, Math.round(mapBackground?.terrainSegments ?? DEFAULT_MAP_BACKGROUND.terrainSegments)),
@@ -202,9 +201,10 @@ export function WorldGroundTerrainMesh({
         mapBackground?.latitude ?? DEFAULT_MAP_BACKGROUND.latitude,
         mapBackground?.longitude ?? DEFAULT_MAP_BACKGROUND.longitude,
         mapBackground?.zoom ?? DEFAULT_MAP_BACKGROUND.zoom,
-        landSize,
+        landWidth,
+        landHeight,
       ),
-    [mapBackground?.latitude, mapBackground?.longitude, mapBackground?.zoom, landSize],
+    [mapBackground?.latitude, mapBackground?.longitude, mapBackground?.zoom, landWidth, landHeight],
   );
 
   const {
@@ -215,9 +215,10 @@ export function WorldGroundTerrainMesh({
     mapEnabled,
     mapBackground?.tileUrl ?? DEFAULT_MAP_BACKGROUND.tileUrl,
     tileGrid,
-    landSize,
+    landWidth,
     mapBackground?.headingDeg ?? 0,
     useCompositedGround,
+    landHeight,
   );
 
   // Composited multi-texture ground CanvasTexture (base + all surfaceZones)
@@ -235,10 +236,15 @@ export function WorldGroundTerrainMesh({
     }
 
     const res = soft ? 512 : 1024;
-    if (!compositeCanvasRef.current || compositeCanvasRef.current.width !== res) {
+    const { widthPx, heightPx } = computeMapTextureCanvasSize(landWidth, landHeight, res);
+    if (
+      !compositeCanvasRef.current ||
+      compositeCanvasRef.current.width !== widthPx ||
+      compositeCanvasRef.current.height !== heightPx
+    ) {
       const c = document.createElement('canvas');
-      c.width = res;
-      c.height = res;
+      c.width = widthPx;
+      c.height = heightPx;
       compositeCanvasRef.current = c;
     }
 
@@ -247,7 +253,8 @@ export function WorldGroundTerrainMesh({
       world: syntheticWorld,
       textures,
       canvas,
-      landSize,
+      landSize: landWidth,
+      landHeight,
       satelliteMosaic: mosaicCanvas,
       tileGrid,
       onAssetImageLoaded: () => setAssetLoadTick((t) => t + 1),
@@ -274,10 +281,11 @@ export function WorldGroundTerrainMesh({
       const b64 = exportCompositeGroundPngBase64(
         syntheticWorld,
         textures,
-        landSize,
+        landWidth,
         mosaicCanvas,
         tileGrid,
-        512,
+        1024,
+        landHeight,
       );
       if (b64) {
         useRoboForgeStore.getState().setMapTileTexture(b64);
@@ -291,7 +299,8 @@ export function WorldGroundTerrainMesh({
     useCompositedGround,
     syntheticWorld,
     textures,
-    landSize,
+    landWidth,
+    landHeight,
     mosaicCanvas,
     mosaicRev,
     tileGrid,
@@ -312,21 +321,25 @@ export function WorldGroundTerrainMesh({
   const terrainGeo = useMemo(() => {
     if (!mapEnabled && !useCompositedGround) return null;
     return buildTerrainBufferGeometry(
-      landSize,
+      landWidth,
       mapEnabled ? mapBackground : undefined,
       tileGrid,
       mapEnabled ? segments : 4,
       useCompositedGround,
+      landHeight,
     );
   }, [
     mapEnabled,
     useCompositedGround,
-    landSize,
+    landWidth,
+    landHeight,
     mapBackground?.elevationEnabled,
     mapBackground?.elevationScale,
     mapBackground?.elevationGrid,
     mapBackground?.elevationGridSize,
     mapBackground?.landSizeMeters,
+    mapBackground?.landWidthMeters,
+    mapBackground?.landHeightMeters,
     tileGrid,
     segments,
     mapBackground,

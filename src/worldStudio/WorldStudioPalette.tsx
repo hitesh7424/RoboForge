@@ -3,9 +3,11 @@ import {
   BrickWall,
   Building2,
   CloudSun,
+  Download,
   ImagePlus,
   Layers,
   Lightbulb,
+  Lock,
   MapPin,
   Mountain,
   Paintbrush,
@@ -13,9 +15,10 @@ import {
   Sparkles,
   Trash2,
   Trees,
+  Unlock,
   Upload,
 } from 'lucide-react';
-import { DEFAULT_MAP_BACKGROUND } from '@/core/mapTiles';
+import { DEFAULT_MAP_BACKGROUND, getMapLandSize } from '@/core/mapTiles';
 import type { MapBackground } from '@/core/schema';
 import { useRoboForgeStore } from '@/core/store';
 import { fetchTerrariumElevationGrid } from '@/core/terrain';
@@ -25,6 +28,7 @@ import {
   materializePresetAsTextureAsset,
   type TexturePresetCategory,
 } from '@/core/texturePresets';
+import { downloadFullMapAreaPng } from '@/core/worldTextureCompositor';
 import { DEFAULT_WORLD_COSMETICS, SKY_PRESET_LIST } from '@/core/worldZones';
 import {
   COSMETIC_PROP_PRESETS,
@@ -104,10 +108,17 @@ export function WorldStudioPalette({
   const [category, setCategory] = useState<'all' | TexturePresetCategory>('all');
   const [isDragOver, setIsDragOver] = useState(false);
   const [demLoading, setDemLoading] = useState(false);
+  const [downloadingMapPng, setDownloadingMapPng] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const editedMapInputRef = useRef<HTMLInputElement | null>(null);
 
   const cosmetics = { ...DEFAULT_WORLD_COSMETICS, ...project.world.cosmetics };
   const mapBg: MapBackground = project.world.mapBackground ?? DEFAULT_MAP_BACKGROUND;
+  const { width: landWidth, height: landHeight } = getMapLandSize(
+    project.world.mapBackground,
+    project.world.ground.size,
+  );
+  const [lockSquare, setLockSquare] = useState(() => Math.abs(landWidth - landHeight) < 0.01);
 
   // Separate user-uploaded custom textures from materialized preset assets
   const userTextures = useMemo(
@@ -211,15 +222,73 @@ export function WorldStudioPalette({
     }
   };
 
+  const updateLandExtent = (nextWidth: number, nextHeight: number) => {
+    const wClamped = Math.max(10, Math.min(5000, Math.round(nextWidth)));
+    const hClamped = Math.max(10, Math.min(5000, Math.round(nextHeight)));
+    updateWorld((w) => {
+      if (!w.mapBackground) w.mapBackground = { ...DEFAULT_MAP_BACKGROUND };
+      w.mapBackground.landWidthMeters = wClamped;
+      w.mapBackground.landHeightMeters = hClamped;
+      w.mapBackground.landSizeMeters = Math.max(wClamped, hClamped);
+      w.ground.size = [wClamped, hClamped];
+    });
+  };
+
+  const handleDownloadMapPng = async () => {
+    setDownloadingMapPng(true);
+    try {
+      const res = await downloadFullMapAreaPng(project.world, project.textures, 'original');
+      addLog(
+        'info',
+        `Downloaded full-quality map tile "${res.filename}" (${res.widthPx}×${res.heightPx}px for ${res.landWidth}m×${res.landHeight}m).`,
+      );
+    } catch (err) {
+      addLog(
+        'error',
+        `Failed to download map PNG: ${err instanceof Error ? err.message : 'unknown error'}`,
+      );
+    } finally {
+      setDownloadingMapPng(false);
+    }
+  };
+
+  const handleUploadEditedMap1To1 = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const asset = await readFileAsTextureAsset(
+        file,
+        useRoboForgeStore.getState().project.textures,
+      );
+      addTexture(asset);
+      updateWorld((w) => {
+        w.ground.textureId = asset.id;
+        w.ground.textureRepeat = [1, 1];
+      });
+      updateWorldCosmetics((c) => {
+        c.groundBasePresetId = undefined;
+      });
+      addLog(
+        'info',
+        `Applied edited base map "${asset.name}.${asset.format}" at 1:1 across ${landWidth}m×${landHeight}m.`,
+      );
+    } catch (err) {
+      addLog('error', err instanceof Error ? err.message : 'Failed to load edited map image.');
+    }
+  };
+
   const handleFetchDem = async () => {
     setDemLoading(true);
     try {
       const res = await fetchTerrariumElevationGrid(
         mapBg.latitude,
         mapBg.longitude,
-        mapBg.landSizeMeters ?? DEFAULT_MAP_BACKGROUND.landSizeMeters,
+        landWidth,
         mapBg.terrainSegments ?? 40,
         mapBg.elevationUrl,
+        15,
+        landHeight,
       );
       if (res) {
         setTerrainElevation(res.relativeGrid, res.gridSize, res.centerElevation);
@@ -975,36 +1044,150 @@ export function WorldStudioPalette({
 
             {/* Land Size, Satellite & DEM Elevation */}
             <div className="rounded-md border border-[#242e40] bg-[#0b0f17] p-2.5 space-y-2.5 text-[11px]">
-              <h3 className="text-[11px] font-semibold text-slate-100 flex items-center gap-1.5">
-                <Mountain className="h-3.5 w-3.5 text-emerald-400" />
-                Terrain & Map Extent
-              </h3>
-
-              <label className="block space-y-1">
-                <div className="flex justify-between text-[10px] text-slate-400">
-                  <span>Map Land Size</span>
-                  <span className="font-mono">
-                    {Math.round(mapBg.landSizeMeters ?? 100)} m × {Math.round(mapBg.landSizeMeters ?? 100)} m
-                  </span>
-                </div>
-                <input
-                  type="range"
-                  min={20}
-                  max={400}
-                  step={10}
-                  aria-label="Map land size meters"
-                  value={mapBg.landSizeMeters ?? 100}
-                  onChange={(e) => {
-                    const size = Number(e.target.value);
-                    updateWorld((w) => {
-                      if (!w.mapBackground) w.mapBackground = { ...DEFAULT_MAP_BACKGROUND };
-                      w.mapBackground.landSizeMeters = size;
-                      w.ground.size = [size, size];
-                    });
+              <input
+                ref={editedMapInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"
+                aria-label="Load edited base map PNG 1:1"
+                className="hidden"
+                onChange={handleUploadEditedMap1To1}
+              />
+              <div className="flex items-center justify-between gap-1">
+                <h3 className="text-[11px] font-semibold text-slate-100 flex items-center gap-1.5">
+                  <Mountain className="h-3.5 w-3.5 text-emerald-400" />
+                  Terrain & Map Extent
+                </h3>
+                <button
+                  type="button"
+                  data-testid="toggle-lock-square"
+                  aria-pressed={lockSquare}
+                  title={
+                    lockSquare
+                      ? 'Unlock to use a rectangular map (Width ≠ Height)'
+                      : 'Lock Width and Height to a square map'
+                  }
+                  onClick={() => {
+                    const next = !lockSquare;
+                    setLockSquare(next);
+                    if (next) {
+                      updateLandExtent(landWidth, landWidth);
+                    }
                   }}
-                  className="w-full accent-emerald-500"
-                />
-              </label>
+                  className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-medium cursor-pointer ${
+                    lockSquare
+                      ? 'border-emerald-700/60 bg-emerald-950/40 text-emerald-300'
+                      : 'border-sky-600/60 bg-sky-950/40 text-sky-300'
+                  }`}
+                >
+                  {lockSquare ? <Lock className="h-2.5 w-2.5" /> : <Unlock className="h-2.5 w-2.5" />}
+                  {lockSquare ? 'Square' : 'Rect'}
+                </button>
+              </div>
+
+              <div className="space-y-2">
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[10px] text-slate-400">
+                    <span>Width X (East–West)</span>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        min={10}
+                        max={5000}
+                        step={5}
+                        data-testid="map-land-width-input"
+                        aria-label="Map land width meters"
+                        value={Math.round(landWidth)}
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          if (!Number.isFinite(v) || v < 10) return;
+                          updateLandExtent(v, lockSquare ? v : landHeight);
+                        }}
+                        className="h-6 w-16 rounded border border-[#2a3346] bg-[#10141d] px-1.5 text-right font-mono text-[11px] text-slate-100"
+                      />
+                      <span className="font-mono text-[10px] text-slate-500">m</span>
+                    </div>
+                  </div>
+                  <input
+                    type="range"
+                    min={20}
+                    max={400}
+                    step={5}
+                    aria-label="Map land width slider"
+                    value={Math.min(400, Math.max(20, landWidth))}
+                    onChange={(e) => {
+                      const v = Number(e.target.value);
+                      updateLandExtent(v, lockSquare ? v : landHeight);
+                    }}
+                    className="w-full accent-emerald-500"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[10px] text-slate-400">
+                    <span>Height Y (North–South)</span>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        min={10}
+                        max={5000}
+                        step={5}
+                        data-testid="map-land-height-input"
+                        aria-label="Map land height meters"
+                        value={Math.round(landHeight)}
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          if (!Number.isFinite(v) || v < 10) return;
+                          updateLandExtent(lockSquare ? v : landWidth, v);
+                        }}
+                        className="h-6 w-16 rounded border border-[#2a3346] bg-[#10141d] px-1.5 text-right font-mono text-[11px] text-slate-100"
+                      />
+                      <span className="font-mono text-[10px] text-slate-500">m</span>
+                    </div>
+                  </div>
+                  <input
+                    type="range"
+                    min={20}
+                    max={400}
+                    step={5}
+                    aria-label="Map land height slider"
+                    value={Math.min(400, Math.max(20, landHeight))}
+                    onChange={(e) => {
+                      const v = Number(e.target.value);
+                      updateLandExtent(lockSquare ? v : landWidth, v);
+                    }}
+                    className="w-full accent-emerald-500"
+                  />
+                </div>
+              </div>
+
+              {/* Download Full Map Tile PNG & 1:1 Edited Re-Upload */}
+              <div className="space-y-1.5 border-t border-[#1c2434] pt-2">
+                <div className="grid grid-cols-2 gap-1.5">
+                  <button
+                    type="button"
+                    disabled={downloadingMapPng}
+                    data-testid="palette-download-map-png"
+                    onClick={() => void handleDownloadMapPng()}
+                    className="inline-flex items-center justify-center gap-1 rounded border border-emerald-700/60 bg-emerald-950/40 px-2 py-1.5 text-[10px] font-medium text-emerald-200 hover:bg-emerald-900/50 disabled:opacity-50 cursor-pointer"
+                  >
+                    <Download className="h-3 w-3 shrink-0" />
+                    {downloadingMapPng ? 'Saving...' : 'Map Tile PNG'}
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="palette-upload-edited-map"
+                    onClick={() => editedMapInputRef.current?.click()}
+                    className="inline-flex items-center justify-center gap-1 rounded border border-[#2a3346] bg-[#121824] px-2 py-1.5 text-[10px] font-medium text-slate-200 hover:bg-[#1c2436] cursor-pointer"
+                  >
+                    <Upload className="h-3 w-3 shrink-0 text-sky-400" />
+                    Load 1:1 Map
+                  </button>
+                </div>
+                <p className="text-[10px] leading-snug text-slate-500">
+                  Download the full {Math.round(landWidth)}m×{Math.round(landHeight)}m ground PNG to
+                  upscale or edit externally, then load it back 1:1 before export.
+                </p>
+              </div>
 
               <label className="flex items-center justify-between cursor-pointer">
                 <span className="text-slate-300">Satellite Base Layer</span>

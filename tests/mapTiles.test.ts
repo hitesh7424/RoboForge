@@ -1,16 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import {
   computeElevationStats,
+  computeMapTextureCanvasSize,
   computeMapTileGrid,
   computeMapTileGridForExtent,
+  computeNativeExportResolution,
+  DEFAULT_MAP_BACKGROUND,
   decodeTerrariumPixel,
   formatTileUrl,
+  getMapLandSize,
   latLonFromEnuOffset,
   latLonToTileFloat,
   parseCoordinateInput,
   sampleElevationAt,
   tileSizeMetersAtLat,
 } from '@/core/mapTiles';
+import { generateTerrainObj } from '@/core/terrainMesh';
 
 describe('Web Mercator map tile math, coordinate parser, & DEM sampling', () => {
   it('converts lat/lon coordinates into Web Mercator tile indices', () => {
@@ -91,4 +96,89 @@ describe('Web Mercator map tile math, coordinate parser, & DEM sampling', () => 
     expect(parseCoordinateInput('95.0, 10.0')).toBeNull();
     expect(parseCoordinateInput('not a coordinate')).toBeNull();
   });
+
+  it('supports rectangular map land dimensions across sizing, canvas aspect ratio, DEM sampling, and OBJ export', () => {
+    expect(
+      getMapLandSize({ enabled: true, landSizeMeters: 140, landWidthMeters: 140, landHeightMeters: 70 }),
+    ).toEqual({ width: 140, height: 70 });
+
+    // Legacy square map falls back cleanly to landSizeMeters
+    expect(getMapLandSize({ enabled: true, landSizeMeters: 120 })).toEqual({
+      width: 120,
+      height: 120,
+    });
+
+    // Texture canvas preserves rectangular aspect ratio
+    expect(computeMapTextureCanvasSize(200, 100, 1024)).toEqual({ widthPx: 1024, heightPx: 512 });
+    expect(computeMapTextureCanvasSize(50, 100, 1024)).toEqual({ widthPx: 512, heightPx: 1024 });
+
+    // Rectangular DEM sampling spans [-width/2, +width/2] x [-height/2, +height/2]
+    const rectDem = {
+      ...DEFAULT_MAP_BACKGROUND,
+      elevationEnabled: true,
+      elevationScale: 1,
+      landWidthMeters: 40,
+      landHeightMeters: 20,
+      elevationGridSize: 2,
+      elevationGrid: [0, 4, 2, 6],
+    };
+    expect(sampleElevationAt(rectDem, -20, -10)).toBeCloseTo(0, 5);
+    expect(sampleElevationAt(rectDem, 20, -10)).toBeCloseTo(4, 5);
+    expect(sampleElevationAt(rectDem, -20, 10)).toBeCloseTo(2, 5);
+    expect(sampleElevationAt(rectDem, 20, 10)).toBeCloseTo(6, 5);
+
+    // Rectangular OBJ mesh vertices span exact X and Y bounds
+    const obj = generateTerrainObj(40, rectDem, 4, 20);
+    expect(obj).toContain('v -20 -10 0');
+    expect(obj).toContain('v 20 10 6');
+  });
+
+  it('preserves original image dimensions and high-res export sizes instead of downscaling to 512px', () => {
+    // 1:1 uploaded high-res image keeps exact original pixel dimensions
+    expect(
+      computeNativeExportResolution(160, 80, {
+        sourceImageWidth: 3000,
+        sourceImageHeight: 1500,
+        sourceIsOneToOne: true,
+        quality: 'original',
+      }),
+    ).toEqual({ widthPx: 3000, heightPx: 1500 });
+
+    // 4K 1:1 uploaded base map is preserved verbatim
+    expect(
+      computeNativeExportResolution(100, 100, {
+        sourceImageWidth: 4096,
+        sourceImageHeight: 4096,
+        sourceIsOneToOne: true,
+        quality: 'original',
+      }),
+    ).toEqual({ widthPx: 4096, heightPx: 4096 });
+
+    // Default 'original' quality for satellite/cosmetic rectangular maps exports >= 2048px
+    expect(computeNativeExportResolution(160, 80, { quality: 'original' })).toEqual({
+      widthPx: 2048,
+      heightPx: 1024,
+    });
+
+    // Explicit 4K quality scales longest edge to 4096 while preserving rectangular aspect ratio
+    expect(computeNativeExportResolution(160, 80, { quality: 4096 })).toEqual({
+      widthPx: 4096,
+      heightPx: 2048,
+    });
+
+    // High-density native satellite mosaic (> 2048px) is preserved without downscaling
+    const denseGrid = computeMapTileGrid(37.422, -122.0841, 20, 4); // 9x9 tiles = 2304px mosaic
+    const denseRes = computeNativeExportResolution(
+      denseGrid.planeSizeMeters * 0.95,
+      denseGrid.planeSizeMeters * 0.95,
+      {
+        tileGrid: denseGrid,
+        tilePx: 256,
+        quality: 'original',
+      },
+    );
+    expect(denseRes.widthPx).toBeGreaterThanOrEqual(2180);
+    expect(denseRes.heightPx).toBeGreaterThanOrEqual(2180);
+  });
 });
+

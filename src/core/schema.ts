@@ -333,6 +333,8 @@ export const MapBackgroundSchema = z.object({
   zoom: z.number().int().min(1).max(21),
   opacity: z.number().min(0.05).max(1),
   landSizeMeters: z.number().min(10).max(5000).optional(),
+  landWidthMeters: z.number().min(10).max(5000).optional(),
+  landHeightMeters: z.number().min(10).max(5000).optional(),
   elevationEnabled: z.boolean().optional(),
   elevationSource: z.enum(['terrarium', 'custom_url', 'heightmap']).optional(),
   elevationUrl: z.string().optional(),
