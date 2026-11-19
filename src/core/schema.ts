@@ -401,6 +401,16 @@ export const WorldCosmeticsSchema = z.object({
 });
 export type WorldCosmetics = z.infer<typeof WorldCosmeticsSchema>;
 
+export const WorldPerformanceSchema = z.object({
+  treeRenderMode: z.enum(['cross_card', '3d_mesh']).optional(),
+  combineTreesWithGround: z.boolean().optional(),
+  combineStaticPropsWithGround: z.boolean().optional(),
+  treeCollision: z.enum(['trunk_only', 'none', 'full']).optional(),
+  disableSceneryShadows: z.boolean().optional(),
+  crossCardTopCrown: z.boolean().optional(),
+});
+export type WorldPerformance = z.infer<typeof WorldPerformanceSchema>;
+
 export const WorldSchema = z.object({
   name: z.string().min(1),
   physics: z.object({
@@ -418,6 +428,7 @@ export const WorldSchema = z.object({
   mapBackground: MapBackgroundSchema.optional(),
   surfaceZones: z.array(SurfaceZoneSchema).optional(),
   cosmetics: WorldCosmeticsSchema.optional(),
+  performance: WorldPerformanceSchema.optional(),
   robotSpawnPose: PoseSchema,
   lights: z.array(LightSchema),
   objects: z.array(WorldObjectSchema),

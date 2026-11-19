@@ -31,6 +31,10 @@ import type {
   WorldObjectSource,
 } from '@/core/schema';
 import { regroundAllWorldObjects } from '@/core/terrainGrounding';
+import {
+  resolveWorldPerformance,
+  type ResolvedWorldPerformance,
+} from '@/core/treeBillboardAtlas';
 import { DEFAULT_WORLD_COSMETICS } from '@/core/worldZones';
 import { createFourWheelRoverProject } from '@/core/templates';
 
@@ -231,6 +235,7 @@ export interface RoboForgeState {
   duplicateSurfaceZone: (zoneId: string) => SurfaceZone | null;
   reorderSurfaceZone: (zoneId: string, direction: 'up' | 'down') => void;
   updateWorldCosmetics: (updater: (cosmetics: WorldCosmetics) => void) => void;
+  updateWorldPerformance: (updater: (perf: ResolvedWorldPerformance) => void) => void;
 
   // Custom Parts, Mesh Assets & Textures
   saveCustomPart: (part: CustomPart) => void;
@@ -1370,6 +1375,14 @@ export const useRoboForgeStore = create<RoboForgeState>()(
             project.world.cosmetics = { ...DEFAULT_WORLD_COSMETICS };
           }
           updater(project.world.cosmetics);
+        });
+      },
+
+      updateWorldPerformance: (updater) => {
+        commitProject((project) => {
+          const next = resolveWorldPerformance(project.world.performance);
+          updater(next);
+          project.world.performance = next;
         });
       },
 

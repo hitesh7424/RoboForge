@@ -23,6 +23,7 @@ import type { MapBackground } from '@/core/schema';
 import { useRoboForgeStore } from '@/core/store';
 import { fetchTerrariumElevationGrid } from '@/core/terrain';
 import { MapLocationControl } from '@/ui/MapLocationControl';
+import { WorldPerformanceControls } from '@/ui/WorldPerformanceControls';
 import {
   BUILTIN_TEXTURE_PRESETS,
   getPresetPreviewDataUrl,
@@ -754,6 +755,9 @@ export function WorldStudioPalette({
                 </label>
               </div>
             </div>
+
+            {/* Gazebo Performance & FPS Optimization (2D Cross-Card Trees + Ground Batching) */}
+            <WorldPerformanceControls world={project.world} variant="panel" />
 
             {/* Buildings & Walls */}
             <div className="rounded-md border border-[#242e40] bg-[#0b0f17] p-2.5 space-y-2.5">

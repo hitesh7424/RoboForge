@@ -10,10 +10,20 @@ import {
   getMapLandSize,
   type MapTileGridSpec,
 } from '@/core/mapTiles';
-import type { Project, SurfaceZone, TextureAsset, World, WorldCosmetics } from '@/core/schema';
+import type { Project, SurfaceZone, TextureAsset, World, WorldCosmetics, WorldObject } from '@/core/schema';
 import { useRoboForgeStore } from '@/core/store';
+import { poseToRosMatrix } from '@/core/coords';
 import { buildTerrainBufferGeometry } from '@/core/terrain';
+import {
+  getSharedTreeAtlasRgba,
+  resolveWorldPerformance,
+} from '@/core/treeBillboardAtlas';
 import { getPineTierVisualRadius, getTreeParts, type TreeSource } from '@/core/treeGeometry';
+import {
+  buildCrossCardTreeBufferGeometry,
+  deterministicYawFromId,
+  getTreeTotalHeight,
+} from '@/core/worldBatcher';
 import {
   exportCompositeGroundPngBase64,
   hasCustomCosmeticGround,
@@ -428,14 +438,91 @@ export function WorldGroundTerrainMesh({
   );
 }
 
+let sharedTreeAtlasTexture: THREE.CanvasTexture | null = null;
+const sharedCrossCardGeos = new Map<string, THREE.BufferGeometry>();
+
+function getSharedTreeAtlasTexture(): THREE.CanvasTexture | null {
+  if (sharedTreeAtlasTexture) return sharedTreeAtlasTexture;
+  if (typeof document === 'undefined') return null;
+  const buf = getSharedTreeAtlasRgba();
+  const canvas = document.createElement('canvas');
+  canvas.width = buf.width;
+  canvas.height = buf.height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  const imgData = ctx.createImageData(buf.width, buf.height);
+  imgData.data.set(buf.rgba);
+  ctx.putImageData(imgData, 0, 0);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.anisotropy = 4;
+  tex.needsUpdate = true;
+  sharedTreeAtlasTexture = tex;
+  return tex;
+}
+
+function getSharedCrossCardGeometry(
+  style: 'deciduous' | 'pine',
+  includeTopCrown: boolean,
+): THREE.BufferGeometry {
+  const key = `${style}:${includeTopCrown ? '1' : '0'}`;
+  let geo = sharedCrossCardGeos.get(key);
+  if (!geo) {
+    geo = buildCrossCardTreeBufferGeometry(style, includeTopCrown);
+    sharedCrossCardGeos.set(key, geo);
+  }
+  return geo;
+}
+
 export function TreeObjectVisual({
   source,
   selected = false,
+  renderMode,
+  includeTopCrown,
+  yawOffset = 0,
+  castShadows = false,
 }: {
   source: TreeSource;
   selected?: boolean;
+  renderMode?: 'cross_card' | '3d_mesh';
+  includeTopCrown?: boolean;
+  yawOffset?: number;
+  castShadows?: boolean;
 }) {
+  const worldPerf = useRoboForgeStore((s) => s.project.world.performance);
+  const resolved = resolveWorldPerformance(worldPerf);
+  const mode = renderMode ?? resolved.treeRenderMode;
+  const topCrown = includeTopCrown ?? resolved.crossCardTopCrown;
   const parts = useMemo(() => getTreeParts(source), [source]);
+
+  if (mode === 'cross_card') {
+    const atlasTex = getSharedTreeAtlasTexture();
+    const geo = getSharedCrossCardGeometry(source.style, topCrown);
+    const totalH = getTreeTotalHeight(source);
+    const r = Math.max(0.3, source.canopyRadius);
+
+    return (
+      <mesh
+        geometry={geo}
+        rotation={[0, 0, yawOffset]}
+        scale={[r, r, totalH]}
+        castShadow={castShadows}
+        receiveShadow={false}
+      >
+        <meshStandardMaterial
+          map={atlasTex ?? undefined}
+          color={selected ? '#93c5fd' : '#ffffff'}
+          alphaTest={0.42}
+          side={THREE.DoubleSide}
+          roughness={0.92}
+          metalness={0.0}
+          envMapIntensity={0.28}
+        />
+      </mesh>
+    );
+  }
 
   return (
     <group>
@@ -454,7 +541,7 @@ export function TreeObjectVisual({
               key={part.id}
               position={part.pose.xyz}
               rotation={[Math.PI / 2, 0, 0]}
-              castShadow
+              castShadow={castShadows}
               receiveShadow
             >
               <coneGeometry args={[coneR, coneH, 16]} />
@@ -473,6 +560,134 @@ export function TreeObjectVisual({
           />
         );
       })}
+    </group>
+  );
+}
+
+/**
+ * High-FPS InstancedMesh renderer for batches of unselected static 2D cross-card trees.
+ * Renders hundreds of Oak & Pine trees in 1-2 WebGL draw calls while supporting click selection.
+ */
+function CrossCardTreeBatchGroup({
+  trees,
+  style,
+  includeTopCrown,
+  castShadows,
+  onSelectTree,
+}: {
+  trees: (WorldObject & { source: TreeSource })[];
+  style: 'deciduous' | 'pine';
+  includeTopCrown: boolean;
+  castShadows: boolean;
+  onSelectTree?: (id: string) => void;
+}) {
+  const meshRef = useRef<THREE.InstancedMesh | null>(null);
+  const invalidate = useThree((s) => s.invalidate);
+  const atlasTex = useMemo(() => getSharedTreeAtlasTexture(), []);
+  const geo = useMemo(
+    () => getSharedCrossCardGeometry(style, includeTopCrown),
+    [style, includeTopCrown],
+  );
+
+  useEffect(() => {
+    const inst = meshRef.current;
+    if (!inst || trees.length === 0) return;
+
+    const worldMat = new THREE.Matrix4();
+    const yawMat = new THREE.Matrix4();
+    const scaleMat = new THREE.Matrix4();
+    const finalMat = new THREE.Matrix4();
+
+    trees.forEach((obj, i) => {
+      const r = Math.max(0.3, obj.source.canopyRadius);
+      const totalH = getTreeTotalHeight(obj.source);
+      const yaw = deterministicYawFromId(obj.id);
+
+      worldMat.copy(poseToRosMatrix(obj.pose));
+      yawMat.makeRotationZ(yaw);
+      scaleMat.makeScale(r, r, totalH);
+      finalMat.copy(worldMat).multiply(yawMat).multiply(scaleMat);
+      inst.setMatrixAt(i, finalMat);
+    });
+
+    inst.instanceMatrix.needsUpdate = true;
+    inst.computeBoundingSphere();
+    invalidate();
+  }, [trees, invalidate]);
+
+  if (trees.length === 0) return null;
+
+  return (
+    <instancedMesh
+      ref={meshRef}
+      key={`tree-batch-${style}-${trees.length}-${includeTopCrown ? '1' : '0'}`}
+      args={[geo, undefined, trees.length]}
+      castShadow={castShadows}
+      receiveShadow={false}
+      frustumCulled={false}
+      onClick={
+        onSelectTree
+          ? (e) => {
+              if (e.instanceId === undefined) return;
+              const hit = trees[e.instanceId];
+              if (!hit) return;
+              e.stopPropagation();
+              onSelectTree(hit.id);
+            }
+          : undefined
+      }
+    >
+      <meshStandardMaterial
+        map={atlasTex ?? undefined}
+        color="#ffffff"
+        alphaTest={0.42}
+        side={THREE.DoubleSide}
+        roughness={0.92}
+        metalness={0.0}
+        envMapIntensity={0.28}
+      />
+    </instancedMesh>
+  );
+}
+
+export function BatchedCrossCardTreesMesh({
+  trees,
+  includeTopCrown,
+  castShadows = false,
+  onSelectTree,
+}: {
+  trees: (WorldObject & { source: TreeSource })[];
+  includeTopCrown: boolean;
+  castShadows?: boolean;
+  onSelectTree?: (id: string) => void;
+}) {
+  const deciduous = useMemo(
+    () => trees.filter((t) => t.source.style === 'deciduous'),
+    [trees],
+  );
+  const pine = useMemo(
+    () => trees.filter((t) => t.source.style === 'pine'),
+    [trees],
+  );
+
+  if (trees.length === 0) return null;
+
+  return (
+    <group data-testid="batched-cross-card-trees">
+      <CrossCardTreeBatchGroup
+        trees={deciduous}
+        style="deciduous"
+        includeTopCrown={includeTopCrown}
+        castShadows={castShadows}
+        onSelectTree={onSelectTree}
+      />
+      <CrossCardTreeBatchGroup
+        trees={pine}
+        style="pine"
+        includeTopCrown={includeTopCrown}
+        castShadows={castShadows}
+        onSelectTree={onSelectTree}
+      />
     </group>
   );
 }

@@ -23,6 +23,7 @@ import { downloadFullMapAreaPng } from '@/core/worldTextureCompositor';
 import { downloadRos2PackageZip, exportRos2Package } from '@/exporters';
 import { resolveExportPackageName, type ExportScope } from '@/exporters/packageFiles';
 import { getTargetConfig } from '@/exporters/targets';
+import { WorldPerformanceControls } from '@/ui/WorldPerformanceControls';
 import { Button } from '@/ui/components/button';
 import {
   Dialog,
@@ -243,6 +244,10 @@ export function ExportModal() {
                   : 'All structural & ROS identifier checks passed. Ready to build with colcon.'}
             </span>
           </div>
+        )}
+
+        {scope !== 'robot' && (
+          <WorldPerformanceControls world={project.world} variant="compact" />
         )}
 
         <div className="flex-1 min-h-0 grid grid-cols-12 gap-3">

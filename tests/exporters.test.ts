@@ -332,6 +332,116 @@ describe('ROS 2 package exporters across Jazzy, Humble, and Lyrical targets', ()
     expect(spawnLaunch).toContain("DeclareLaunchArgument('x'");
     expect(spawnLaunch).toContain("DeclareLaunchArgument('yaw'");
   });
+
+  it('excludes unused textures across full, robot, and world export scopes', () => {
+    const project = createFourWheelRoverProject('jazzy-harmonic');
+    const tinyPng =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+
+    project.textures.push(
+      {
+        id: 'tex_robot_only',
+        name: 'robot_carbon',
+        format: 'png',
+        mimeType: 'image/png',
+        dataBase64: tinyPng,
+        byteLength: 68,
+      },
+      {
+        id: 'tex_world_obj',
+        name: 'crate_wood',
+        format: 'png',
+        mimeType: 'image/png',
+        dataBase64: tinyPng,
+        byteLength: 68,
+      },
+      {
+        id: 'tex_ground_only',
+        name: 'arena_floor',
+        format: 'png',
+        mimeType: 'image/png',
+        dataBase64: tinyPng,
+        byteLength: 68,
+      },
+      {
+        id: 'tex_unused',
+        name: 'orphan_unused',
+        format: 'png',
+        mimeType: 'image/png',
+        dataBase64: tinyPng,
+        byteLength: 68,
+      },
+      {
+        id: 'tex_zone_baked',
+        name: 'zone_baked_only',
+        format: 'png',
+        mimeType: 'image/png',
+        dataBase64: tinyPng,
+        byteLength: 68,
+      },
+    );
+
+    project.robot.links[0]!.visual.material.textureId = 'tex_robot_only';
+    const primObj = project.world.objects.find((o) => o.source.type === 'primitive');
+    if (primObj && primObj.source.type === 'primitive') {
+      primObj.source.material.textureId = 'tex_world_obj';
+    }
+    project.world.ground.textureId = 'tex_ground_only';
+
+    // Full scope: includes used robot + world textures, excludes orphan unused & unreferenced zone textures
+    const fullFiles = exportRos2Package(project, undefined, 'full');
+    expect(fullFiles['materials/textures/robot_carbon.png']).toBeInstanceOf(Uint8Array);
+    expect(fullFiles['materials/textures/crate_wood.png']).toBeInstanceOf(Uint8Array);
+    expect(fullFiles['materials/textures/arena_floor.png']).toBeInstanceOf(Uint8Array);
+    expect(fullFiles['materials/textures/orphan_unused.png']).toBeUndefined();
+    expect(fullFiles['materials/textures/zone_baked_only.png']).toBeUndefined();
+
+    // Robot scope: includes only robot textures
+    const robotFiles = exportRos2Package(project, undefined, 'robot');
+    expect(robotFiles['materials/textures/robot_carbon.png']).toBeInstanceOf(Uint8Array);
+    expect(robotFiles['materials/textures/crate_wood.png']).toBeUndefined();
+    expect(robotFiles['materials/textures/arena_floor.png']).toBeUndefined();
+    expect(robotFiles['materials/textures/orphan_unused.png']).toBeUndefined();
+
+    // World scope: includes only world textures
+    const worldFiles = exportRos2Package(project, undefined, 'world');
+    expect(worldFiles['materials/textures/robot_carbon.png']).toBeUndefined();
+    expect(worldFiles['materials/textures/crate_wood.png']).toBeInstanceOf(Uint8Array);
+    expect(worldFiles['materials/textures/arena_floor.png']).toBeInstanceOf(Uint8Array);
+    expect(worldFiles['materials/textures/orphan_unused.png']).toBeUndefined();
+
+    // When ground is baked into <world>_map.png via visible surface zones, ground & zone raw textures are not separately exported
+    project.world.surfaceZones = [
+      {
+        id: 'z_custom',
+        name: 'custom_pad',
+        kind: 'rect',
+        points: [
+          [-2, -2],
+          [2, -2],
+          [2, 2],
+          [-2, 2],
+        ],
+        textureSource: 'custom',
+        textureId: 'tex_zone_baked',
+        tint: [1, 1, 1, 1],
+        repeat: [2, 2],
+        opacity: 1,
+        visible: true,
+      },
+    ];
+    const bakedWorldFiles = exportRos2Package(project, undefined, 'world');
+    expect(bakedWorldFiles[`materials/textures/${project.world.name}_map.png`]).toBeInstanceOf(
+      Uint8Array,
+    );
+    expect(bakedWorldFiles['materials/textures/zone_baked_only.png']).toBeUndefined();
+    expect(bakedWorldFiles['materials/textures/arena_floor.png']).toBeUndefined();
+    expect(bakedWorldFiles['materials/textures/crate_wood.png']).toBeInstanceOf(Uint8Array);
+
+    // When robot has no used textures (even with unused textures in project.textures), .gitkeep is emitted
+    delete project.robot.links[0]!.visual.material.textureId;
+    const robotNoTexFiles = exportRos2Package(project, undefined, 'robot');
+    expect(robotNoTexFiles['materials/textures/.gitkeep']).toBe('');
+    expect(robotNoTexFiles['materials/textures/robot_carbon.png']).toBeUndefined();
+  });
 });
-
-

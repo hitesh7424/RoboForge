@@ -60,8 +60,10 @@ import {
 import type { Project, Sensor, WorldObject } from '@/core/schema';
 import { useRoboForgeStore } from '@/core/store';
 import { decodeHeightmapImageBase64, fetchTerrariumElevationGrid } from '@/core/terrain';
-import { createDefaultTreeSource } from '@/core/treeGeometry';
+import { resolveWorldPerformance } from '@/core/treeBillboardAtlas';
+import { createDefaultTreeSource, type TreeSource } from '@/core/treeGeometry';
 import { formatLengthSummary, getUnitConversion, toDisplayValue } from '@/core/units';
+import { deterministicYawFromId } from '@/core/worldBatcher';
 import { generateMujocoXml } from '@/exporters/mjcf';
 import {
   computeTrackingDelta,
@@ -70,7 +72,11 @@ import {
 } from '@/sim/simHelpers';
 import { GeometryRenderer, PrimitiveMesh } from '@/viewport/MeshAssetRenderer';
 import { CameraPresetBar, ViewportCameraRig } from '@/viewport/ViewportCameraRig';
-import { TreeObjectVisual, WorldGroundTerrainMesh } from '@/viewport/WorldTerrainMesh';
+import {
+  BatchedCrossCardTreesMesh,
+  TreeObjectVisual,
+  WorldGroundTerrainMesh,
+} from '@/viewport/WorldTerrainMesh';
 import { isSoftwareGlRenderer, StudioEnvironment } from '@/viewport/webglCaps';
 
 const PIP_WIDTH = 240;
@@ -850,6 +856,24 @@ function MujocoSceneContent({
     }
   });
 
+  const worldPerf = useMemo(
+    () => resolveWorldPerformance(project.world.performance),
+    [project.world.performance],
+  );
+  const selectedWorldObjectId =
+    isEditingWorld && selection?.type === 'worldObject' ? selection.id : null;
+  const batchedStaticTrees = useMemo(() => {
+    if (worldPerf.treeRenderMode !== 'cross_card') return [];
+    return project.world.objects.filter(
+      (o): o is WorldObject & { source: TreeSource } =>
+        o.static && o.source.type === 'tree' && o.id !== selectedWorldObjectId,
+    );
+  }, [project.world.objects, worldPerf.treeRenderMode, selectedWorldObjectId]);
+  const batchedTreeIds = useMemo(
+    () => new Set(batchedStaticTrees.map((t) => t.id)),
+    [batchedStaticTrees],
+  );
+
   return (
     <>
       <color attach="background" args={['#0b0e14']} />
@@ -945,8 +969,22 @@ function MujocoSceneContent({
             onSelectWorld={() => select({ type: 'world' })}
           />
 
+          {batchedStaticTrees.length > 0 && (
+            <BatchedCrossCardTreesMesh
+              trees={batchedStaticTrees}
+              includeTopCrown={worldPerf.crossCardTopCrown}
+              castShadows={!soft && !worldPerf.disableSceneryShadows}
+              onSelectTree={
+                isEditingWorld
+                  ? (id) => select({ type: 'worldObject', id })
+                  : undefined
+              }
+            />
+          )}
+
           {project.world.objects.map((obj: WorldObject) => {
             if (obj.source.type !== 'primitive' && obj.source.type !== 'tree') return null;
+            if (batchedTreeIds.has(obj.id)) return null;
             const tf = matrixToPosQuat(poseToRosMatrix(obj.pose));
             const isSelected =
               isEditingWorld && selection?.type === 'worldObject' && selection.id === obj.id;
@@ -970,7 +1008,14 @@ function MujocoSceneContent({
               >
                 {isSelected && <ObjectAxesTriad length={0.42} />}
                 {obj.source.type === 'tree' ? (
-                  <TreeObjectVisual source={obj.source} selected={isSelected} />
+                  <TreeObjectVisual
+                    source={obj.source}
+                    selected={isSelected}
+                    renderMode={worldPerf.treeRenderMode}
+                    includeTopCrown={worldPerf.crossCardTopCrown}
+                    yawOffset={deterministicYawFromId(obj.id)}
+                    castShadows={!soft && !worldPerf.disableSceneryShadows}
+                  />
                 ) : (
                   (() => {
                     const mat = obj.source.material;

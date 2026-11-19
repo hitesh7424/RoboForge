@@ -25,7 +25,10 @@ import { materializePresetAsTextureAsset } from '@/core/texturePresets';
 import {
   computeTreeDimensionsForCanopy,
   createDefaultTreeSource,
+  type TreeSource,
 } from '@/core/treeGeometry';
+import { resolveWorldPerformance } from '@/core/treeBillboardAtlas';
+import { deterministicYawFromId } from '@/core/worldBatcher';
 import {
   createRectZonePoints,
   DEFAULT_WORLD_COSMETICS,
@@ -34,7 +37,11 @@ import {
 } from '@/core/worldZones';
 import { PrimitiveMesh } from '@/viewport/MeshAssetRenderer';
 import { ViewportCameraRig } from '@/viewport/ViewportCameraRig';
-import { TreeObjectVisual, WorldGroundTerrainMesh } from '@/viewport/WorldTerrainMesh';
+import {
+  BatchedCrossCardTreesMesh,
+  TreeObjectVisual,
+  WorldGroundTerrainMesh,
+} from '@/viewport/WorldTerrainMesh';
 import { isSoftwareGlRenderer, StudioEnvironment } from '@/viewport/webglCaps';
 import {
   COSMETIC_PROP_PRESETS,
@@ -199,6 +206,10 @@ function WorldStudioScene3D({
   const landSize = Math.max(landWidth, landHeight);
 
   const cosmetics = { ...DEFAULT_WORLD_COSMETICS, ...project.world.cosmetics };
+  const worldPerf = useMemo(
+    () => resolveWorldPerformance(project.world.performance),
+    [project.world.performance],
+  );
   const sky = useMemo(() => getSkyAtmospherePalette(cosmetics), [cosmetics]);
 
   const selectedObjectId = selection?.type === 'worldObject' ? selection.id : null;
@@ -212,6 +223,19 @@ function WorldStudioScene3D({
   const selectedZone = useMemo(
     () => (project.world.surfaceZones ?? []).find((z) => z.id === selectedZoneId) ?? null,
     [project.world.surfaceZones, selectedZoneId],
+  );
+
+  // Batch unselected static 2D cross-card trees into 1-2 WebGL InstancedMesh draw calls
+  const batchedStaticTrees = useMemo(() => {
+    if (worldPerf.treeRenderMode !== 'cross_card') return [];
+    return project.world.objects.filter(
+      (o): o is WorldObject & { source: TreeSource } =>
+        o.static && o.source.type === 'tree' && o.id !== selectedObjectId,
+    );
+  }, [project.world.objects, worldPerf.treeRenderMode, selectedObjectId]);
+  const batchedTreeIds = useMemo(
+    () => new Set(batchedStaticTrees.map((t) => t.id)),
+    [batchedStaticTrees],
   );
 
   // Trigger demand re-render whenever world/selection changes
@@ -570,9 +594,24 @@ function WorldStudioScene3D({
         </mesh>
       ))}
 
+      {/* Batched High-FPS Static 2D Cross-Card Trees (1-2 InstancedMesh Draw Calls) */}
+      {batchedStaticTrees.length > 0 && (
+        <BatchedCrossCardTreesMesh
+          trees={batchedStaticTrees}
+          includeTopCrown={worldPerf.crossCardTopCrown}
+          castShadows={!soft && !worldPerf.disableSceneryShadows}
+          onSelectTree={
+            tool === 'select'
+              ? (id) => select({ type: 'worldObject', id })
+              : undefined
+          }
+        />
+      )}
+
       {/* World Objects */}
       {project.world.objects.map((obj) => {
         if (obj.source.type !== 'primitive' && obj.source.type !== 'tree') return null;
+        if (batchedTreeIds.has(obj.id)) return null;
         const isSelected = obj.id === selectedObjectId;
         const mat = poseToRosMatrix(obj.pose);
         const pos = new THREE.Vector3();
@@ -601,7 +640,14 @@ function WorldStudioScene3D({
             }}
           >
             {obj.source.type === 'tree' ? (
-              <TreeObjectVisual source={obj.source} selected={isSelected} />
+              <TreeObjectVisual
+                source={obj.source}
+                selected={isSelected}
+                renderMode={worldPerf.treeRenderMode}
+                includeTopCrown={worldPerf.crossCardTopCrown}
+                yawOffset={deterministicYawFromId(obj.id)}
+                castShadows={!soft && !worldPerf.disableSceneryShadows}
+              />
             ) : (
               <PrimitiveMesh
                 shape={obj.source.shape}

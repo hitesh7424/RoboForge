@@ -17,6 +17,7 @@ import {
 } from '@/core/treeGeometry';
 import { downloadFullMapAreaPng } from '@/core/worldTextureCompositor';
 import { MapLocationControl } from '@/ui/MapLocationControl';
+import { WorldPerformanceControls } from '@/ui/WorldPerformanceControls';
 import { Button } from '@/ui/components/button';
 import { Input } from '@/ui/components/input';
 import { NumericField, PoseFields, RosNameField } from '@/ui/inspectors/NumericField';
@@ -681,6 +682,10 @@ export function WorldSettingsInspector({ world }: { world: World }) {
           <MapIcon className="h-3.5 w-3.5" />
           Open 2D Map Builder (Trees &amp; Buildings)
         </Button>
+      </div>
+
+      <div className="border-t border-[#222938] pt-3">
+        <WorldPerformanceControls world={world} variant="panel" />
       </div>
 
       <div className="space-y-1.5 border-t border-[#222938] pt-3">

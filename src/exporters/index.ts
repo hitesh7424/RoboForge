@@ -14,6 +14,15 @@ import {
 import type { Project } from '@/core/schema';
 import { generateTerrainObj, shouldUseTerrainMesh } from '@/core/terrainMesh';
 import {
+  getCachedTreeAtlasPngBytes,
+  resolveWorldPerformance,
+} from '@/core/treeBillboardAtlas';
+import {
+  generateMergedStaticSceneryObj,
+  generateMergedTreesObj,
+  generateUnitCrossCardTreeObj,
+} from '@/core/worldBatcher';
+import {
   hasCustomCosmeticGround,
   renderHighResExportMapPngBase64,
 } from '@/core/worldTextureCompositor';
@@ -61,14 +70,17 @@ function collectUsedRobotTextureIds(project: Project): Set<string> {
 
 function collectUsedWorldTextureIds(project: Project): Set<string> {
   const ids = new Set<string>();
-  if (project.world.ground.textureId) ids.add(project.world.ground.textureId);
+  const hasCosmeticMap = Boolean(
+    (project.world.surfaceZones ?? []).some((z) => z.visible) ||
+      project.world.cosmetics?.groundBasePresetId,
+  );
+  if (project.world.ground.enabled && !hasCosmeticMap && project.world.ground.textureId) {
+    ids.add(project.world.ground.textureId);
+  }
   for (const obj of project.world.objects) {
     if (obj.source.type === 'primitive' && obj.source.material.textureId) {
       ids.add(obj.source.material.textureId);
     }
-  }
-  for (const z of project.world.surfaceZones ?? []) {
-    if (z.textureSource === 'custom' && z.textureId) ids.add(z.textureId);
   }
   return ids;
 }
@@ -145,6 +157,72 @@ export function exportRos2Package(
     hasMeshes = true;
   }
 
+  // Optimized batched trees & static scenery meshes + atlas/palette textures for Gazebo FPS
+  if (includeWorld) {
+    const perf = resolveWorldPerformance(scopedProject.world.performance);
+    const staticTrees = scopedProject.world.objects.filter(
+      (o) => o.static && o.source.type === 'tree',
+    );
+    const unmergedTrees = scopedProject.world.objects.filter(
+      (o) => o.source.type === 'tree' && (!o.static || !perf.combineTreesWithGround),
+    );
+    let needsTreeAtlas = false;
+
+    if (perf.combineTreesWithGround && staticTrees.length > 0) {
+      const merged = generateMergedTreesObj(staticTrees, perf);
+      files[`meshes/${worldName}_trees.obj`] = merged.objText;
+      hasMeshes = true;
+      if (perf.treeRenderMode === 'cross_card') {
+        needsTreeAtlas = true;
+      } else if (merged.palettePngBytes) {
+        files[`materials/textures/${worldName}_trees_palette.png`] = merged.palettePngBytes;
+        hasTextures = true;
+      }
+    }
+
+    if (perf.treeRenderMode === 'cross_card' && unmergedTrees.length > 0) {
+      needsTreeAtlas = true;
+      const hasDeciduous = unmergedTrees.some(
+        (o) => o.source.type === 'tree' && o.source.style === 'deciduous',
+      );
+      const hasPine = unmergedTrees.some(
+        (o) => o.source.type === 'tree' && o.source.style === 'pine',
+      );
+      if (hasDeciduous) {
+        files[`meshes/${worldName}_tree_card_deciduous.obj`] = generateUnitCrossCardTreeObj(
+          'deciduous',
+          perf.crossCardTopCrown,
+        );
+        hasMeshes = true;
+      }
+      if (hasPine) {
+        files[`meshes/${worldName}_tree_card_pine.obj`] = generateUnitCrossCardTreeObj(
+          'pine',
+          perf.crossCardTopCrown,
+        );
+        hasMeshes = true;
+      }
+    }
+
+    if (needsTreeAtlas) {
+      files[`materials/textures/${worldName}_trees_atlas.png`] = getCachedTreeAtlasPngBytes();
+      hasTextures = true;
+    }
+
+    if (perf.combineStaticPropsWithGround) {
+      const staticUntexturedPrims = scopedProject.world.objects.filter(
+        (o) => o.static && o.source.type === 'primitive' && !o.source.material.textureId,
+      );
+      if (staticUntexturedPrims.length > 0) {
+        const scenery = generateMergedStaticSceneryObj(scopedProject.world.objects);
+        files[`meshes/${worldName}_static_scenery.obj`] = scenery.objText;
+        files[`materials/textures/${worldName}_scenery_palette.png`] = scenery.palettePngBytes;
+        hasMeshes = true;
+        hasTextures = true;
+      }
+    }
+  }
+
   if (includeRobot) {
     for (const asset of scopedProject.assets) {
       files[`meshes/${asset.name}.${asset.format}`] = base64ToUint8Array(asset.dataBase64);
@@ -182,15 +260,20 @@ export function exportRos2Package(
     }
   }
 
-  const allowedTexIds =
-    scope === 'full'
-      ? null
-      : scope === 'robot'
-        ? collectUsedRobotTextureIds(scopedProject)
-        : collectUsedWorldTextureIds(scopedProject);
+  const allowedTexIds = new Set<string>();
+  if (includeRobot) {
+    for (const id of collectUsedRobotTextureIds(scopedProject)) {
+      allowedTexIds.add(id);
+    }
+  }
+  if (includeWorld) {
+    for (const id of collectUsedWorldTextureIds(scopedProject)) {
+      allowedTexIds.add(id);
+    }
+  }
 
   for (const tex of textures) {
-    if (allowedTexIds && !allowedTexIds.has(tex.id)) continue;
+    if (!allowedTexIds.has(tex.id)) continue;
     files[`materials/textures/${tex.name}.${tex.format}`] = base64ToUint8Array(tex.dataBase64);
     hasTextures = true;
   }
