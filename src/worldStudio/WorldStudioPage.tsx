@@ -9,6 +9,7 @@ import {
   Magnet,
   MapPin,
   MousePointer2,
+  Move,
   PanelLeft,
   PanelRight,
   Pentagon,
@@ -37,6 +38,7 @@ const STUDIO_TOOLS: {
   accent: string;
 }[] = [
   { id: 'select', label: 'Select & Edit', shortLabel: 'Select', icon: MousePointer2, accent: 'bg-blue-600' },
+  { id: 'move_map', label: 'Move & Align Satellite Map Area', shortLabel: 'Move Map', icon: Move, accent: 'bg-cyan-600' },
   { id: 'zone_rect', label: 'Paint Rectangular Texture Zone', shortLabel: 'Rect Zone', icon: Square, accent: 'bg-emerald-600' },
   { id: 'zone_poly', label: 'Paint Polygon Texture Zone', shortLabel: 'Poly Zone', icon: Pentagon, accent: 'bg-emerald-600' },
   { id: 'zone_circle', label: 'Paint Circular Texture Zone', shortLabel: 'Circle Zone', icon: Circle, accent: 'bg-emerald-600' },
@@ -235,7 +237,9 @@ export function WorldStudioPage() {
                 }`}
               >
                 <Icon className="h-3.5 w-3.5 shrink-0" />
-                <span className="hidden xl:inline">{t.shortLabel}</span>
+                <span className={active ? 'hidden xl:inline' : 'hidden 2xl:inline'}>
+                  {t.shortLabel}
+                </span>
               </button>
             );
           })}
@@ -310,6 +314,12 @@ export function WorldStudioPage() {
           <WorldStudioPalette
             tool={tool}
             onSelectTool={setTool}
+            onActivate2DMapMove={() => {
+              setTool('move_map');
+              if (viewMode === '3d') {
+                setViewMode('split');
+              }
+            }}
             brush={brush}
             onChangeBrush={setBrush}
             treeStyle={treeStyle}
@@ -335,7 +345,7 @@ export function WorldStudioPage() {
         <div className="flex flex-1 min-w-0 min-h-0 overflow-hidden">
           {viewMode === '2d' && (
             <div className="h-full w-full">
-              <WorldStudio2DCanvas {...sharedCanvasProps} />
+              <WorldStudio2DCanvas {...sharedCanvasProps} onSelectTool={setTool} />
             </div>
           )}
 
@@ -348,7 +358,7 @@ export function WorldStudioPage() {
           {viewMode === 'split' && (
             <div className="grid h-full w-full grid-cols-2 divide-x divide-[#232b3b]">
               <div className="min-w-0 min-h-0 h-full">
-                <WorldStudio2DCanvas {...sharedCanvasProps} />
+                <WorldStudio2DCanvas {...sharedCanvasProps} onSelectTool={setTool} />
               </div>
               <div className="min-w-0 min-h-0 h-full">
                 <WorldStudio3DViewport {...sharedCanvasProps} />

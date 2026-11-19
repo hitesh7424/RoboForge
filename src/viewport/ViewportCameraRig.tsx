@@ -74,14 +74,21 @@ export function ViewportCameraRig({
     zoom?: number;
   } | null>(null);
 
-  // Sync saved pose continuously while user orbits
+  // Sync saved pose continuously while user orbits or zooms
   const syncSavedFromActiveCamera = () => {
     const tgt = orbitRef.current?.target ?? savedTargetRef.current;
     savedTargetRef.current.copy(tgt);
     savedPosRef.current.copy(camera.position);
-    const dist = camera.position.distanceTo(tgt);
-    if (dist > 0.05) {
-      savedDistanceRef.current = dist;
+    if (camera instanceof THREE.OrthographicCamera) {
+      const equivDist = size.height / (2 * Math.max(0.005, camera.zoom) * TAN_HALF_FOV);
+      if (Number.isFinite(equivDist) && equivDist > 0.05) {
+        savedDistanceRef.current = equivDist;
+      }
+    } else {
+      const dist = camera.position.distanceTo(tgt);
+      if (dist > 0.05) {
+        savedDistanceRef.current = dist;
+      }
     }
   };
 
@@ -145,7 +152,7 @@ export function ViewportCameraRig({
 
     const goalTarget = new THREE.Vector3(...target);
     const dist = focusChanged ? defaultDistance : Math.max(0.4, savedDistanceRef.current);
-    const orthoDistance = Math.max(dist, 12);
+    const orthoDistance = Math.max(dist, defaultDistance, 25);
     const offset = getViewOffset(
       view,
       projection === 'orthographic' ? orthoDistance : dist,
@@ -153,7 +160,7 @@ export function ViewportCameraRig({
     const goalPos = goalTarget.clone().add(offset);
     const goalZoom =
       projection === 'orthographic'
-        ? Math.max(0.005, Math.min(2000, size.height / (2 * defaultDistance * TAN_HALF_FOV)))
+        ? Math.max(0.005, Math.min(2000, size.height / (2 * dist * TAN_HALF_FOV)))
         : undefined;
 
     if (soft) {
@@ -242,7 +249,7 @@ export function ViewportCameraRig({
 
   const initialOrthoZoom = useMemo(() => {
     const h = size.height > 0 ? size.height : 640;
-    return Math.max(20, Math.min(800, h / (2 * defaultDistance * TAN_HALF_FOV)));
+    return Math.max(0.05, Math.min(800, h / (2 * defaultDistance * TAN_HALF_FOV)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

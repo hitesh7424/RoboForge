@@ -6,6 +6,7 @@ export type StudioViewMode = 'split' | '2d' | '3d';
 
 export type StudioTool =
   | 'select'
+  | 'move_map'
   | 'zone_rect'
   | 'zone_poly'
   | 'zone_circle'

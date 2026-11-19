@@ -1,12 +1,11 @@
 import { useRef, useState } from 'react';
-import { Download, Globe, Map as MapIcon, MapPin, Mountain, Trash2, Trees, Upload } from 'lucide-react';
+import { Download, Globe, Map as MapIcon, Mountain, Trash2, Trees, Upload } from 'lucide-react';
 import {
   computeElevationStats,
   DEFAULT_MAP_BACKGROUND,
   downloadMapTilesTextureBase64,
   getMapLandSize,
   MAP_TILE_PRESETS,
-  parseCoordinateInput,
   TERRARIUM_URL_DEFAULT,
 } from '@/core/mapTiles';
 import type { Light, World, WorldObject } from '@/core/schema';
@@ -17,6 +16,7 @@ import {
   DEFAULT_TRUNK_COLOR,
 } from '@/core/treeGeometry';
 import { downloadFullMapAreaPng } from '@/core/worldTextureCompositor';
+import { MapLocationControl } from '@/ui/MapLocationControl';
 import { Button } from '@/ui/components/button';
 import { Input } from '@/ui/components/input';
 import { NumericField, PoseFields, RosNameField } from '@/ui/inspectors/NumericField';
@@ -47,6 +47,7 @@ export function WorldSettingsInspector({ world }: { world: World }) {
   const textures = useRoboForgeStore((s) => s.project.textures);
   const units = useRoboForgeStore((s) => s.units);
   const updateWorld = useRoboForgeStore((s) => s.updateWorld);
+  const conformWorldObjectsToTerrain = useRoboForgeStore((s) => s.conformWorldObjectsToTerrain);
   const setMapTileTexture = useRoboForgeStore((s) => s.setMapTileTexture);
   const addLog = useRoboForgeStore((s) => s.addLog);
   const setMapAnnotatorOpen = useRoboForgeStore((s) => s.setMapAnnotatorOpen);
@@ -55,10 +56,6 @@ export function WorldSettingsInspector({ world }: { world: World }) {
     world.mapBackground ?? DEFAULT_MAP_BACKGROUND;
   const landDims = getMapLandSize(world.mapBackground, world.ground.size);
   const elevStats = computeElevationStats(mapBg);
-  const [coordInput, setCoordInput] = useState(
-    `${mapBg.latitude.toFixed(6)}, ${mapBg.longitude.toFixed(6)}`,
-  );
-  const [coordError, setCoordError] = useState(false);
   const [downloadingMapTex, setDownloadingMapTex] = useState(false);
   const [savingMapPng, setSavingMapPng] = useState(false);
 
@@ -89,21 +86,6 @@ export function WorldSettingsInspector({ world }: { world: World }) {
       });
     };
     reader.readAsDataURL(file);
-  };
-
-  const applyCoordPaste = () => {
-    const parsed = parseCoordinateInput(coordInput);
-    if (!parsed) {
-      setCoordError(true);
-      return;
-    }
-    setCoordError(false);
-    updateWorld((w) => {
-      const m = ensureMapBackground(w);
-      m.latitude = parsed.lat;
-      m.longitude = parsed.lon;
-      m.enabled = true;
-    });
   };
 
   return (
@@ -322,33 +304,25 @@ export function WorldSettingsInspector({ world }: { world: World }) {
           />
         </label>
 
-        <div className="space-y-1">
-          <label htmlFor="map-coord-paste" className="flex items-center gap-1 text-[11px] text-slate-400">
-            <MapPin className="h-3 w-3 text-emerald-400" />
-            Center Coordinate (Lat, Lon → ROS 0,0)
-          </label>
-          <div className="flex items-center gap-1.5">
-            <Input
-              id="map-coord-paste"
-              placeholder="37.4220, -122.0841"
-              value={coordInput}
-              onChange={(e) => {
-                setCoordInput(e.target.value);
-                setCoordError(false);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') applyCoordPaste();
-              }}
-              className={`font-mono text-[11px] ${coordError ? 'border-red-500' : ''}`}
-            />
-            <Button type="button" size="sm" variant="secondary" onClick={applyCoordPaste}>
-              Center
-            </Button>
-          </div>
-          {coordError && (
-            <p className="text-[10px] text-red-400">Enter &quot;lat, lon&quot; (e.g. 37.422, -122.0841).</p>
-          )}
-        </div>
+        <MapLocationControl
+          latitude={mapBg.latitude}
+          longitude={mapBg.longitude}
+          headingDeg={mapBg.headingDeg}
+          tileUrl={mapBg.tileUrl}
+          landWidth={landDims.width}
+          landHeight={landDims.height}
+          onChangeCenter={(lat, lon, placeLabel) => {
+            updateWorld((w) => {
+              const m = ensureMapBackground(w);
+              m.latitude = lat;
+              m.longitude = lon;
+              m.enabled = true;
+            });
+            if (placeLabel) {
+              addLog('info', `Centered map on ${placeLabel} (${lat.toFixed(5)}, ${lon.toFixed(5)}).`);
+            }
+          }}
+        />
 
         <div className="grid grid-cols-2 gap-2">
           <NumericField
@@ -361,7 +335,6 @@ export function WorldSettingsInspector({ world }: { world: World }) {
             min={-85.05}
             max={85.05}
             onCommit={(val) => {
-              setCoordInput(`${val.toFixed(6)}, ${mapBg.longitude.toFixed(6)}`);
               updateWorld((w) => {
                 ensureMapBackground(w).latitude = val;
               });
@@ -377,7 +350,6 @@ export function WorldSettingsInspector({ world }: { world: World }) {
             min={-180}
             max={180}
             onCommit={(val) => {
-              setCoordInput(`${mapBg.latitude.toFixed(6)}, ${val.toFixed(6)}`);
               updateWorld((w) => {
                 ensureMapBackground(w).longitude = val;
               });
@@ -616,6 +588,18 @@ export function WorldSettingsInspector({ world }: { world: World }) {
                 : 'Flat / Pending'}
             </span>
           </div>
+
+          {world.objects.length > 0 && (
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              className="w-full"
+              onClick={() => conformWorldObjectsToTerrain()}
+            >
+              Conform All Objects to Terrain ({world.objects.length})
+            </Button>
+          )}
         </div>
 
         <div className="space-y-1.5 rounded border border-[#222938] bg-[#0b0e14] px-2.5 py-2">

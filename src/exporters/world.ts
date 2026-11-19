@@ -1,6 +1,7 @@
 import { computeGeometryInertia } from '@/core/inertia';
-import { getMapLandSize, sampleElevationAt } from '@/core/mapTiles';
+import { getMapLandSize } from '@/core/mapTiles';
 import type { Primitive, Project, TextureAsset } from '@/core/schema';
+import { sampleTerrainHeight } from '@/core/terrainGrounding';
 import { shouldUseTerrainMesh } from '@/core/terrainMesh';
 import {
   computeTreeInertial,
@@ -296,7 +297,7 @@ export function generateWorldSdf(project: Project, target: TargetConfig): string
     lines.push(`    </model>`);
   }
 
-  const terrainZ = sampleElevationAt(
+  const terrainZ = sampleTerrainHeight(
     world.mapBackground,
     world.robotSpawnPose.xyz[0],
     world.robotSpawnPose.xyz[1],

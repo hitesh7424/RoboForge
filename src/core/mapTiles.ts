@@ -432,19 +432,134 @@ export function formatTileUrl(
 }
 
 /**
- * Parse pasted coordinate strings such as "37.4220, -122.0841" or "37.4220 -122.0841".
+ * Format a latitude/longitude pair as a clean single-line string.
+ */
+export function formatLatLonPair(latDeg: number, lonDeg: number, decimals = 6): string {
+  return `${clampLatitude(latDeg).toFixed(decimals)}, ${normalizeLongitude(lonDeg).toFixed(decimals)}`;
+}
+
+/**
+ * Shift (latDeg, lonDeg) by an exact ENU metric nudge (eastM, northM).
+ */
+export function nudgeLatLonMeters(
+  latDeg: number,
+  lonDeg: number,
+  eastM: number,
+  northM: number,
+): { lat: number; lon: number } {
+  return latLonFromEnuOffset(latDeg, lonDeg, eastM, northM);
+}
+
+/**
+ * Convert a 2D map-drag gesture in ROS top-down meters (`dragDxRosM` right, `dragDyRosM` up)
+ * into the updated map center (lat, lon), accounting for `headingDeg`.
+ *
+ * Dragging the map image RIGHT (+dragDxRosM) pulls terrain from the LEFT into the center,
+ * so the new map center shifts in the opposite direction of the drag.
+ */
+export function shiftLatLonByMapDrag(
+  latDeg: number,
+  lonDeg: number,
+  dragDxRosM: number,
+  dragDyRosM: number,
+  headingDeg = 0,
+): { lat: number; lon: number } {
+  const rad = (headingDeg * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const eastShiftM = -dragDxRosM * cos + dragDyRosM * sin;
+  const northShiftM = -dragDxRosM * sin - dragDyRosM * cos;
+  return latLonFromEnuOffset(latDeg, lonDeg, eastShiftM, northShiftM);
+}
+
+function parseDmsPart(
+  deg: string,
+  min: string | undefined,
+  sec: string | undefined,
+  hemisphere: string | undefined,
+): number {
+  const d = Number(deg);
+  const m = min ? Number(min) : 0;
+  const s = sec ? Number(sec) : 0;
+  if (!Number.isFinite(d) || !Number.isFinite(m) || !Number.isFinite(s)) return NaN;
+  let val = Math.abs(d) + m / 60 + s / 3600;
+  if (d < 0) val = -val;
+  const hemi = hemisphere?.toUpperCase();
+  if (hemi === 'S' || hemi === 'W') val = -Math.abs(val);
+  if (hemi === 'N' || hemi === 'E') val = Math.abs(val);
+  return val;
+}
+
+/**
+ * Parse coordinate strings in multiple common formats:
+ * - Decimal pairs: "37.4220, -122.0841", "37.4220 -122.0841", "(37.422, -122.0841)"
+ * - Cardinal decimals: "37.422° N, 122.0841° W", "12.9716N 77.5946E"
+ * - DMS: "37°25'19.2\"N 122°05'02.8\"W"
+ * - Google Maps / OpenStreetMap URLs: "/@37.422,-122.0841,18z", "?q=37.422,-122.0841", "#map=18/37.422/-122.0841"
  */
 export function parseCoordinateInput(raw: string): { lat: number; lon: number } | null {
-  const parts = raw
-    .trim()
-    .split(/[\s,;]+/)
-    .filter(Boolean);
-  if (parts.length !== 2) return null;
-  const lat = Number(parts[0]);
-  const lon = Number(parts[1]);
-  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
-  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
-  return { lat, lon };
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  // 1. Google Maps URL "@lat,lon" or query param "?q=lat,lon" / "ll=lat,lon"
+  const gmapsAt = trimmed.match(/@(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/);
+  if (gmapsAt) {
+    const lat = Number(gmapsAt[1]);
+    const lon = Number(gmapsAt[2]);
+    if (Number.isFinite(lat) && Number.isFinite(lon) && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180) {
+      return { lat, lon };
+    }
+  }
+  const urlQuery = trimmed.match(/[?&](?:q|ll|query|center)=(-?\d+(?:\.\d+)?)(?:,|%2C)\s*(-?\d+(?:\.\d+)?)/i);
+  if (urlQuery) {
+    const lat = Number(urlQuery[1]);
+    const lon = Number(urlQuery[2]);
+    if (Number.isFinite(lat) && Number.isFinite(lon) && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180) {
+      return { lat, lon };
+    }
+  }
+  // OpenStreetMap URL "#map=zoom/lat/lon"
+  const osmHash = trimmed.match(/#map=\d+(?:\.\d+)?\/(-?\d+(?:\.\d+)?)\/(-?\d+(?:\.\d+)?)/i);
+  if (osmHash) {
+    const lat = Number(osmHash[1]);
+    const lon = Number(osmHash[2]);
+    if (Number.isFinite(lat) && Number.isFinite(lon) && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180) {
+      return { lat, lon };
+    }
+  }
+
+  // 2. DMS format: 37°25'19.2"N 122°05'02.8"W
+  const dmsRegex =
+    /^\s*(-?\d+(?:\.\d+)?)\s*°\s*(?:(\d+(?:\.\d+)?)\s*['′]\s*(?:(\d+(?:\.\d+)?)\s*["″]\s*)?)?([NS])?[\s,;]+(-?\d+(?:\.\d+)?)\s*°\s*(?:(\d+(?:\.\d+)?)\s*['′]\s*(?:(\d+(?:\.\d+)?)\s*["″]\s*)?)?([EW])?\s*$/i;
+  const dmsMatch = trimmed.match(dmsRegex);
+  if (dmsMatch) {
+    const lat = parseDmsPart(dmsMatch[1]!, dmsMatch[2], dmsMatch[3], dmsMatch[4]);
+    const lon = parseDmsPart(dmsMatch[5]!, dmsMatch[6], dmsMatch[7], dmsMatch[8]);
+    if (Number.isFinite(lat) && Number.isFinite(lon) && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180) {
+      return { lat, lon };
+    }
+  }
+
+  // 3. Cardinal decimals or plain decimal pair (with optional parens / degree symbols)
+  const cleaned = trimmed.replace(/[()[\]]/g, '').trim();
+  const cardinalRegex =
+    /^([+-]?\d+(?:\.\d+)?)\s*°?\s*([NS])?[\s,;]+([+-]?\d+(?:\.\d+)?)\s*°?\s*([EW])?$/i;
+  const cardMatch = cleaned.match(cardinalRegex);
+  if (cardMatch) {
+    let lat = Number(cardMatch[1]);
+    let lon = Number(cardMatch[3]);
+    const ns = cardMatch[2]?.toUpperCase();
+    const ew = cardMatch[4]?.toUpperCase();
+    if (ns === 'S') lat = -Math.abs(lat);
+    if (ns === 'N') lat = Math.abs(lat);
+    if (ew === 'W') lon = -Math.abs(lon);
+    if (ew === 'E') lon = Math.abs(lon);
+    if (Number.isFinite(lat) && Number.isFinite(lon) && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180) {
+      return { lat, lon };
+    }
+  }
+
+  return null;
 }
 
 /**

@@ -313,6 +313,21 @@ export const WorldObjectSourceSchema = z.discriminatedUnion('type', [
 ]);
 export type WorldObjectSource = z.infer<typeof WorldObjectSourceSchema>;
 
+export const TerrainPlacementSchema = z.object({
+  kind: z.enum(['wall', 'building', 'tree', 'prop']).optional(),
+  followTerrain: z.boolean().optional(),
+  nominalHeight: z.number().positive().optional(),
+  nominalLength: z.number().positive().optional(),
+  endpoints: z
+    .tuple([
+      z.tuple([z.number().finite(), z.number().finite()]),
+      z.tuple([z.number().finite(), z.number().finite()]),
+    ])
+    .optional(),
+  jointOverlap: z.number().nonnegative().optional(),
+});
+export type TerrainPlacement = z.infer<typeof TerrainPlacementSchema>;
+
 export const WorldObjectSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -320,6 +335,7 @@ export const WorldObjectSchema = z.object({
   pose: PoseSchema,
   static: z.boolean(),
   mass: z.number().positive().optional(),
+  terrainPlacement: TerrainPlacementSchema.optional(),
 });
 export type WorldObject = z.infer<typeof WorldObjectSchema>;
 

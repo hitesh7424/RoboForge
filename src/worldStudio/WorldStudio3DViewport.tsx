@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentRef } from 'react';
 import { Canvas, useThree, type ThreeEvent } from '@react-three/fiber';
 import { Grid, Line, TransformControls } from '@react-three/drei';
-import { Check, Crosshair, Move, RotateCw, Scaling, X } from 'lucide-react';
+import { Box, Check, Crosshair, Grid as GridIcon, Move, RotateCw, Scaling, X } from 'lucide-react';
 import * as THREE from 'three';
 import { poseToRosMatrix, quaternionToRosRpy } from '@/core/coords';
-import { DEFAULT_MAP_BACKGROUND, getMapLandSize, sampleElevationAt } from '@/core/mapTiles';
+import { DEFAULT_MAP_BACKGROUND, getMapLandSize } from '@/core/mapTiles';
 import type { MapBackground, SurfaceZone, WorldObject } from '@/core/schema';
 import {
   useRoboForgeStore,
@@ -12,6 +12,15 @@ import {
   type CameraViewPreset,
   type TransformMode,
 } from '@/core/store';
+import {
+  buildTerrainConformingWallSegments,
+  computeBuildingTerrainPlacement,
+  computePropTerrainPose,
+  computeTreeTerrainPose,
+  regroundWorldObjectToTerrain,
+  sampleTerrainHeight,
+  sampleTerrainPolyline3D,
+} from '@/core/terrainGrounding';
 import { materializePresetAsTextureAsset } from '@/core/texturePresets';
 import {
   computeTreeDimensionsForCanopy,
@@ -69,21 +78,14 @@ function ZoneOutline3D({
         const a = (i / segs) * Math.PI * 2;
         const x = cx + Math.cos(a) * r;
         const y = cy + Math.sin(a) * r;
-        pts.push([x, y, sampleElevationAt(mapBg, x, y) + zLift]);
+        pts.push([x, y, sampleTerrainHeight(mapBg, x, y) + zLift]);
       }
       return pts;
     }
 
     if (zone.points.length < 2) return [];
-    const pts: [number, number, number][] = zone.points.map(([x, y]) => [
-      x,
-      y,
-      sampleElevationAt(mapBg, x, y) + zLift,
-    ]);
-    if (zone.kind !== 'path' && pts.length >= 3) {
-      pts.push(pts[0]!);
-    }
-    return pts;
+    const closed = zone.kind !== 'path' && zone.points.length >= 3;
+    return sampleTerrainPolyline3D(zone.points, mapBg, zLift, closed, 2.0);
   }, [zone, mapBg]);
 
   if (points3D.length < 2) return null;
@@ -245,7 +247,7 @@ function WorldStudioScene3D({
     e.stopPropagation();
     const rx = snapVal(e.point.x);
     const ry = snapVal(e.point.y);
-    const tz = sampleElevationAt(mapBg, rx, ry);
+    const tz = sampleTerrainHeight(mapBg, rx, ry);
 
     if (tool === 'select') {
       const hitZone = findTopHitSurfaceZone(e.point.x, e.point.y, project.world.surfaceZones);
@@ -287,6 +289,7 @@ function WorldStudioScene3D({
     if (tool === 'tree') {
       const base = createDefaultTreeSource(treeStyle);
       const dims = computeTreeDimensionsForCanopy(treeRadius, treeHeight, treeStyle);
+      const placed = computeTreeTerrainPose(rx, ry, dims.trunkRadius, mapBg);
       addWorldObject(
         treeStyle === 'pine' ? 'pine_tree' : 'oak_tree',
         {
@@ -296,9 +299,10 @@ function WorldStudioScene3D({
           trunkHeight: dims.trunkHeight,
           canopyHeight: dims.canopyHeight,
         },
-        { xyz: [rx, ry, Number(tz.toFixed(3))], rpy: [0, 0, 0] },
+        placed.pose,
         true,
         45,
+        placed.terrainPlacement,
       );
       return;
     }
@@ -306,29 +310,24 @@ function WorldStudioScene3D({
     if (tool === 'prop') {
       const preset =
         COSMETIC_PROP_PRESETS.find((p) => p.id === selectedPropId) ?? COSMETIC_PROP_PRESETS[0]!;
-      const halfH =
-        preset.shape.kind === 'box'
-          ? preset.shape.size[2] / 2
-          : preset.shape.kind === 'cylinder' || preset.shape.kind === 'capsule'
-            ? preset.shape.length / 2
-            : preset.shape.kind === 'sphere'
-              ? preset.shape.radius
-              : preset.shape.depth / 2;
+      const shape = structuredClone(preset.shape);
+      const placed = computePropTerrainPose(rx, ry, shape, mapBg);
       const texId = preset.defaultPresetId ? ensurePresetAssetId(preset.defaultPresetId) : undefined;
       addWorldObject(
         preset.id,
         {
           type: 'primitive',
-          shape: structuredClone(preset.shape),
+          shape,
           material: {
             name: `${preset.id}_mat`,
             rgba: texId ? [1, 1, 1, 1] : hexToRgba(preset.defaultColorHex, 1),
             ...(texId ? { textureId: texId, textureRepeat: [2, 2] } : {}),
           },
         },
-        { xyz: [rx, ry, Number((tz + halfH).toFixed(3))], rpy: [0, 0, 0] },
+        placed.pose,
         preset.static,
         preset.mass,
+        placed.terrainPlacement,
       );
       return;
     }
@@ -362,6 +361,12 @@ function WorldStudioScene3D({
     const sx = grp.scale.x;
     const sy = grp.scale.y;
     const sz = grp.scale.z;
+    const prevX = obj.pose.xyz[0];
+    const prevY = obj.pose.xyz[1];
+    const prevZ = obj.pose.xyz[2];
+    const movedHoriz = Math.hypot(pos.x - prevX, pos.y - prevY) > 0.02;
+    const movedVertOnly = !movedHoriz && Math.abs(pos.z - prevZ) > 0.02;
+
     updateWorldObject(obj.id, (draft) => {
       draft.pose.xyz = [
         Number(pos.x.toFixed(3)),
@@ -380,6 +385,11 @@ function WorldStudioScene3D({
             Math.max(0.1, Number((draft.source.shape.size[1] * sy).toFixed(3))),
             Math.max(0.1, Number((draft.source.shape.size[2] * sz).toFixed(3))),
           ];
+          if (draft.terrainPlacement?.kind === 'wall') {
+            draft.terrainPlacement.nominalHeight = draft.source.shape.size[2];
+            draft.terrainPlacement.nominalLength = draft.source.shape.size[0];
+            delete draft.terrainPlacement.endpoints;
+          }
         } else if (draft.source.shape.kind === 'cylinder' || draft.source.shape.kind === 'capsule') {
           draft.source.shape.radius = Math.max(
             0.05,
@@ -395,11 +405,25 @@ function WorldStudioScene3D({
             Number((draft.source.shape.radius * Math.max(sx, sy, sz)).toFixed(3)),
           );
         } else if (draft.source.shape.kind === 'extrude') {
-          draft.source.shape.depth = Math.max(
-            0.2,
-            Number((draft.source.shape.depth * sz).toFixed(3)),
-          );
+          const nextH = Math.max(0.2, Number((draft.source.shape.depth * sz).toFixed(3)));
+          draft.source.shape.depth = nextH;
+          if (draft.terrainPlacement) {
+            draft.terrainPlacement.nominalHeight = nextH;
+          }
         }
+      }
+
+      if (gizmoMode === 'rotate' && draft.terrainPlacement?.kind === 'wall') {
+        delete draft.terrainPlacement.endpoints;
+      }
+
+      if (movedVertOnly) {
+        // User explicitly dragged Z arrow: ensure object stays above ground (never buried)
+        const clone = structuredClone(draft);
+        regroundWorldObjectToTerrain(clone, mapBg);
+        draft.pose.xyz[2] = Math.max(draft.pose.xyz[2], clone.pose.xyz[2]);
+      } else {
+        regroundWorldObjectToTerrain(draft, mapBg);
       }
     });
     grp.scale.set(1, 1, 1);
@@ -407,15 +431,8 @@ function WorldStudioScene3D({
 
   const draftLine3D = useMemo((): [number, number, number][] => {
     if (draftPoints3D.length < 2) return [];
-    const pts: [number, number, number][] = draftPoints3D.map(([x, y]) => [
-      x,
-      y,
-      sampleElevationAt(mapBg, x, y) + 0.12,
-    ]);
-    if ((tool === 'zone_poly' || tool === 'building') && pts.length >= 3) {
-      pts.push(pts[0]!);
-    }
-    return pts;
+    const closed = (tool === 'zone_poly' || tool === 'building') && draftPoints3D.length >= 3;
+    return sampleTerrainPolyline3D(draftPoints3D, mapBg, 0.12, closed, 2.0);
   }, [draftPoints3D, mapBg, tool]);
 
   const rectPreview3D = useMemo((): [number, number, number][] => {
@@ -426,13 +443,7 @@ function WorldStudioScene3D({
       rectDrag3D.p2[0],
       rectDrag3D.p2[1],
     );
-    const pts: [number, number, number][] = corners.map(([x, y]) => [
-      x,
-      y,
-      sampleElevationAt(mapBg, x, y) + 0.12,
-    ]);
-    if (pts.length > 0) pts.push(pts[0]!);
-    return pts;
+    return sampleTerrainPolyline3D(corners, mapBg, 0.12, true, 2.0);
   }, [rectDrag3D, mapBg]);
 
   const selectedObjGroup = selectedObj ? objectRefs.current[selectedObj.id] : null;
@@ -552,7 +563,7 @@ function WorldStudioScene3D({
       {draftPoints3D.map(([x, y], idx) => (
         <mesh
           key={`draft-pt-${idx}`}
-          position={[x, y, sampleElevationAt(mapBg, x, y) + 0.16]}
+          position={[x, y, sampleTerrainHeight(mapBg, x, y) + 0.16]}
         >
           <sphereGeometry args={[0.28, 12, 12]} />
           <meshBasicMaterial color={idx === 0 ? '#facc15' : '#34d399'} />
@@ -731,17 +742,22 @@ export function WorldStudio3DViewport(props: WorldStudio3DViewportProps) {
           Number((x - cx).toFixed(3)),
           Number((y - cy).toFixed(3)),
         ]);
-        const tz = sampleElevationAt(mapBg, cx, cy);
         const h = Math.max(0.5, buildingHeight);
+        const placed = computeBuildingTerrainPlacement(localPts, cx, cy, h, mapBg, 0);
         addWorldObject(
           'building',
           {
             type: 'primitive',
-            shape: { kind: 'extrude', points: localPts, depth: h },
+            shape: { kind: 'extrude', points: localPts, depth: placed.depth },
             material: { name: 'building_mat', rgba: hexToRgba(buildingColor, 1) },
           },
-          { xyz: [Number(cx.toFixed(3)), Number(cy.toFixed(3)), Number((tz + h / 2).toFixed(3))], rpy: [0, 0, 0] },
+          {
+            xyz: [Number(cx.toFixed(3)), Number(cy.toFixed(3)), placed.centerZ],
+            rpy: [0, 0, 0],
+          },
           true,
+          undefined,
+          placed.terrainPlacement,
         );
         setDraftPoints3D([]);
       } else if (tool === 'wall' && pts.length >= 2) {
@@ -751,31 +767,28 @@ export function WorldStudio3DViewport(props: WorldStudio3DViewportProps) {
           brush.textureSource === 'custom'
             ? brush.textureId
             : ensurePresetAssetId(brush.presetId);
-        for (let i = 0; i < pts.length - 1; i++) {
-          const [x1, y1] = pts[i]!;
-          const [x2, y2] = pts[i + 1]!;
-          const segLen = Math.hypot(x2 - x1, y2 - y1);
-          if (segLen < 0.15) continue;
-          const mx = (x1 + x2) / 2;
-          const my = (y1 + y2) / 2;
-          const yaw = Math.atan2(y2 - y1, x2 - x1);
-          const tz = sampleElevationAt(mapBg, mx, my);
+        const segments = buildTerrainConformingWallSegments(pts, h, t, mapBg);
+        for (const seg of segments) {
           addWorldObject(
             'wall',
             {
               type: 'primitive',
-              shape: { kind: 'box', size: [Number(segLen.toFixed(3)), t, h] },
+              shape: { kind: 'box', size: seg.size },
               material: {
                 name: 'wall_mat',
                 rgba: texId ? [1, 1, 1, 1] : [0.75, 0.78, 0.82, 1],
-                ...(texId ? { textureId: texId, textureRepeat: [Math.max(1, Math.round(segLen / 2)), 1] } : {}),
+                ...(texId
+                  ? {
+                      textureId: texId,
+                      textureRepeat: [Math.max(1, Math.round(seg.size[0] / 2)), 1],
+                    }
+                  : {}),
               },
             },
-            {
-              xyz: [Number(mx.toFixed(3)), Number(my.toFixed(3)), Number((tz + h / 2).toFixed(3))],
-              rpy: [0, 0, Number(yaw.toFixed(4))],
-            },
+            seg.pose,
             true,
+            undefined,
+            seg.terrainPlacement,
           );
         }
         setDraftPoints3D([]);
@@ -873,16 +886,56 @@ export function WorldStudio3DViewport(props: WorldStudio3DViewportProps) {
         </Canvas>
       )}
 
-      {/* Top-Left 3D Label */}
-      <div className="pointer-events-none absolute left-2.5 top-2.5 flex items-center gap-2">
-        <span className="rounded border border-[#283347] bg-[#0e131d]/90 px-2 py-0.5 font-mono text-[10px] font-semibold text-sky-300">
-          3D COSMETIC VIEWPORT
+      {/* Top-Left 3D Label & Top-Right Projection Switcher */}
+      <div className="pointer-events-none absolute inset-x-2.5 top-2.5 flex items-center justify-between gap-2">
+        <span
+          data-testid="studio-projection-badge"
+          className="rounded border border-[#283347] bg-[#0e131d]/90 px-2 py-0.5 font-mono text-[10px] font-semibold text-sky-300"
+        >
+          3D VIEW · {projection === 'orthographic' ? 'ORTHO' : 'PERSP'}
         </span>
+
+        <div
+          role="group"
+          aria-label="World Studio 3D camera projection"
+          className="pointer-events-auto flex items-center gap-0.5 rounded border border-[#263145] bg-[#0d121c]/95 p-0.5 shadow"
+        >
+          <button
+            type="button"
+            data-testid="studio-proj-perspective"
+            aria-pressed={projection === 'perspective'}
+            title="Perspective 3D projection"
+            onClick={() => setProjection('perspective')}
+            className={`inline-flex h-6 items-center gap-1 rounded px-2 text-[10px] font-medium whitespace-nowrap cursor-pointer ${
+              projection === 'perspective'
+                ? 'bg-blue-600 text-white'
+                : 'text-slate-400 hover:bg-[#171f2e] hover:text-slate-100'
+            }`}
+          >
+            <Box className="h-3 w-3" />
+            Persp
+          </button>
+          <button
+            type="button"
+            data-testid="studio-proj-orthographic"
+            aria-pressed={projection === 'orthographic'}
+            title="Orthographic parallel projection (CAD)"
+            onClick={() => setProjection('orthographic')}
+            className={`inline-flex h-6 items-center gap-1 rounded px-2 text-[10px] font-medium whitespace-nowrap cursor-pointer ${
+              projection === 'orthographic'
+                ? 'bg-blue-600 text-white'
+                : 'text-slate-400 hover:bg-[#171f2e] hover:text-slate-100'
+            }`}
+          >
+            <GridIcon className="h-3 w-3" />
+            Ortho
+          </button>
+        </div>
       </div>
 
       {/* Inline Finish Bar when drawing in 3D */}
       {draftPoints3D.length > 0 && (
-        <div className="absolute left-1/2 top-2.5 z-10 flex -translate-x-1/2 items-center gap-2 rounded-md border border-emerald-500/50 bg-[#0e1522]/95 px-2.5 py-1 text-xs shadow-lg">
+        <div className="absolute left-1/2 top-11 z-10 flex -translate-x-1/2 items-center gap-2 rounded-md border border-emerald-500/50 bg-[#0e1522]/95 px-2.5 py-1 text-xs shadow-lg">
           <span className="font-mono text-[11px] text-emerald-200">
             {draftPoints3D.length} pts on terrain
           </span>
@@ -908,7 +961,7 @@ export function WorldStudio3DViewport(props: WorldStudio3DViewportProps) {
       )}
 
       {/* Bottom 3D Controls: Camera Presets & Object Gizmo Mode */}
-      <div className="absolute bottom-2.5 left-2.5 right-2.5 flex items-center justify-between gap-2 pointer-events-none">
+      <div className="absolute bottom-2.5 left-2.5 right-2.5 flex flex-wrap items-center justify-between gap-1.5 pointer-events-none">
         {isObjectSelected && props.tool === 'select' ? (
           <div className="pointer-events-auto flex items-center gap-0.5 rounded border border-[#263145] bg-[#0d121c]/95 p-0.5">
             {(
@@ -925,7 +978,7 @@ export function WorldStudio3DViewport(props: WorldStudio3DViewportProps) {
                   type="button"
                   onClick={() => setGizmoMode(g.id)}
                   aria-pressed={gizmoMode === g.id}
-                  className={`inline-flex h-6 items-center gap-1 rounded px-2 text-[10px] font-medium cursor-pointer ${
+                  className={`inline-flex h-6 items-center gap-1 rounded px-1.5 text-[10px] font-medium cursor-pointer ${
                     gizmoMode === g.id
                       ? 'bg-blue-600 text-white'
                       : 'text-slate-300 hover:bg-[#1a2232]'
@@ -938,21 +991,28 @@ export function WorldStudio3DViewport(props: WorldStudio3DViewportProps) {
             })}
           </div>
         ) : (
-          <div className="max-w-[55%] truncate whitespace-nowrap rounded border border-[#242e40] bg-[#0d121c]/85 px-2 py-1 text-[10px] text-slate-300">
+          <div className="max-w-[46%] truncate whitespace-nowrap rounded border border-[#242e40] bg-[#0d121c]/85 px-2 py-1 text-[10px] text-slate-300">
             {props.tool === 'select'
               ? 'Drag to orbit · Right-drag pan · Click to inspect'
-              : 'Click terrain to paint · Drag to draw'}
+              : props.tool === 'move_map'
+                ? 'Move Map active · Drag the 2D canvas or mini-map to align area'
+                : 'Click terrain to paint · Drag to draw'}
           </div>
         )}
 
-        <div className="pointer-events-auto flex items-center gap-1 rounded border border-[#263145] bg-[#0d121c]/95 p-0.5">
-          {(['iso', 'top', 'front', 'right'] as const).map((v) => (
+        <div
+          role="group"
+          aria-label="World Studio 3D camera views"
+          className="pointer-events-auto flex items-center gap-0.5 rounded border border-[#263145] bg-[#0d121c]/95 p-0.5"
+        >
+          {(['iso', 'top', 'front', 'back', 'left', 'right'] as const).map((v) => (
             <button
               key={v}
               type="button"
+              data-testid={`studio-cam-${v}`}
+              aria-pressed={cameraView === v}
               onClick={() => {
                 setCameraView(v);
-                setProjection(v === 'top' ? 'orthographic' : 'perspective');
                 setPresetTrigger((n) => n + 1);
               }}
               className={`rounded px-1.5 py-0.5 font-mono text-[10px] uppercase cursor-pointer ${

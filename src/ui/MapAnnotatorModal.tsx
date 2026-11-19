@@ -28,10 +28,16 @@ import {
   DEFAULT_MAP_BACKGROUND,
   formatTileUrl,
   getMapLandSize,
-  sampleElevationAt,
 } from '@/core/mapTiles';
 import type { WorldObject } from '@/core/schema';
 import { useRoboForgeStore } from '@/core/store';
+import {
+  buildTerrainConformingWallSegments,
+  computeBuildingTerrainPlacement,
+  computeTreeTerrainPose,
+  regroundWorldObjectToTerrain,
+  sampleTerrainHeight,
+} from '@/core/terrainGrounding';
 import {
   computeTreeDimensionsForCanopy,
   createDefaultTreeSource,
@@ -396,9 +402,9 @@ export function MapAnnotatorModal() {
 
   const commitTreeAt = useCallback(
     (cx: number, cy: number, radiusM: number) => {
-      const terrainZ = sampleElevationAt(mapBg, cx, cy);
       const baseSource = createDefaultTreeSource(treeStyle);
       const dims = computeTreeDimensionsForCanopy(radiusM, presetTreeHeight, treeStyle);
+      const placed = computeTreeTerrainPose(cx, cy, dims.trunkRadius, mapBg);
 
       const created = addWorldObject(
         treeStyle === 'pine' ? 'map_pine' : 'map_tree',
@@ -409,12 +415,10 @@ export function MapAnnotatorModal() {
           trunkHeight: dims.trunkHeight,
           canopyHeight: dims.canopyHeight,
         },
-        {
-          xyz: [Number(cx.toFixed(3)), Number(cy.toFixed(3)), Number(terrainZ.toFixed(3))],
-          rpy: [0, 0, 0],
-        },
+        placed.pose,
         true,
         45,
+        placed.terrainPlacement,
       );
 
       select({ type: 'worldObject', id: created.id });
@@ -422,7 +426,7 @@ export function MapAnnotatorModal() {
         created.id,
         created.name,
         'tree',
-        `${treeStyle} r=${dims.canopyRadius}m trunk=${dims.trunkHeight}m @ (${cx.toFixed(1)}, ${cy.toFixed(1)}, z=${terrainZ.toFixed(1)})`,
+        `${treeStyle} r=${dims.canopyRadius}m trunk=${dims.trunkHeight}m @ (${cx.toFixed(1)}, ${cy.toFixed(1)}, z=${placed.pose.xyz[2].toFixed(1)})`,
       );
     },
     [mapBg, treeStyle, presetTreeHeight, addWorldObject, select, pushLiveChange],
@@ -443,8 +447,8 @@ export function MapAnnotatorModal() {
         Number((vx - cx).toFixed(3)),
         Number((vy - cy).toFixed(3)),
       ]);
-      const terrainZ = sampleElevationAt(mapBg, cx, cy);
       const h = Math.max(0.5, Number(buildingHeight.toFixed(2)));
+      const placed = computeBuildingTerrainPlacement(localPts, cx, cy, h, mapBg, 0);
       const rgba = hexToRgba(buildingColor);
 
       const created = addWorldObject(
@@ -454,7 +458,7 @@ export function MapAnnotatorModal() {
           shape: {
             kind: 'extrude',
             points: localPts,
-            depth: h,
+            depth: placed.depth,
           },
           material: {
             name: 'building_mat',
@@ -462,14 +466,12 @@ export function MapAnnotatorModal() {
           },
         },
         {
-          xyz: [
-            Number(cx.toFixed(3)),
-            Number(cy.toFixed(3)),
-            Number((terrainZ + h / 2).toFixed(3)),
-          ],
+          xyz: [Number(cx.toFixed(3)), Number(cy.toFixed(3)), placed.centerZ],
           rpy: [0, 0, 0],
         },
         true,
+        undefined,
+        placed.terrainPlacement,
       );
 
       setDraftPoly([]);
@@ -492,42 +494,25 @@ export function MapAnnotatorModal() {
       const rgba = hexToRgba(wallColor);
       let lastCreatedId: string | null = null;
 
-      for (let i = 0; i < pts.length - 1; i++) {
-        const [x1, y1] = pts[i]!;
-        const [x2, y2] = pts[i + 1]!;
-        const dx = x2 - x1;
-        const dy = y2 - y1;
-        const segLen = Math.hypot(dx, dy);
-        if (segLen < 0.1) continue;
-
-        const mx = (x1 + x2) / 2;
-        const my = (y1 + y2) / 2;
-        const yaw = Math.atan2(dy, dx);
-        const len = Number((pts.length > 2 ? segLen + t * 0.45 : segLen).toFixed(3));
-        const terrainZ = sampleElevationAt(mapBg, mx, my);
-
+      const segments = buildTerrainConformingWallSegments(pts, h, t, mapBg);
+      for (const seg of segments) {
         const created = addWorldObject(
           'map_wall',
           {
             type: 'primitive',
             shape: {
               kind: 'box',
-              size: [len, t, h],
+              size: seg.size,
             },
             material: {
               name: 'wall_mat',
               rgba,
             },
           },
-          {
-            xyz: [
-              Number(mx.toFixed(3)),
-              Number(my.toFixed(3)),
-              Number((terrainZ + h / 2).toFixed(3)),
-            ],
-            rpy: [0, 0, Number(yaw.toFixed(4))],
-          },
+          seg.pose,
           true,
+          undefined,
+          seg.terrainPlacement,
         );
 
         lastCreatedId = created.id;
@@ -535,7 +520,7 @@ export function MapAnnotatorModal() {
           created.id,
           created.name,
           'wall',
-          `L=${segLen.toFixed(1)}m h=${h}m t=${t}m @ (${mx.toFixed(1)}, ${my.toFixed(1)})`,
+          `L=${seg.size[0].toFixed(1)}m h=${h}m t=${t}m @ (${seg.pose.xyz[0].toFixed(1)}, ${seg.pose.xyz[1].toFixed(1)})`,
         );
       }
 
@@ -1040,17 +1025,10 @@ export function MapAnnotatorModal() {
     } else if (drag.type === 'moveObj') {
       const nextX = Number((rx - drag.offsetX).toFixed(3));
       const nextY = Number((ry - drag.offsetY).toFixed(3));
-      const tz = sampleElevationAt(mapBg, nextX, nextY);
       updateWorldObject(drag.objectId, (obj) => {
         obj.pose.xyz[0] = nextX;
         obj.pose.xyz[1] = nextY;
-        if (obj.source.type === 'tree') {
-          obj.pose.xyz[2] = Number(tz.toFixed(3));
-        } else if (obj.source.type === 'primitive' && obj.source.shape.kind === 'extrude') {
-          obj.pose.xyz[2] = Number((tz + obj.source.shape.depth / 2).toFixed(3));
-        } else if (obj.source.type === 'primitive' && obj.source.shape.kind === 'box') {
-          obj.pose.xyz[2] = Number((tz + obj.source.shape.size[2] / 2).toFixed(3));
-        }
+        regroundWorldObjectToTerrain(obj, mapBg);
       });
     } else if (drag.type === 'resizeTree') {
       const obj = project.world.objects.find((o) => o.id === drag.objectId);
@@ -1423,7 +1401,7 @@ export function MapAnnotatorModal() {
               <div className="absolute bottom-2.5 left-2.5 flex items-center gap-1.5">
                 <div className="rounded border border-[#232b3b] bg-[#0e121a]/90 px-2 py-1 font-mono text-[10px] text-slate-300 tabular-nums">
                   {hoverRos
-                    ? `E:${hoverRos[0].toFixed(1)}m N:${hoverRos[1].toFixed(1)}m Z:${sampleElevationAt(mapBg, hoverRos[0], hoverRos[1]).toFixed(1)}m`
+                    ? `E:${hoverRos[0].toFixed(1)}m N:${hoverRos[1].toFixed(1)}m Z:${sampleTerrainHeight(mapBg, hoverRos[0], hoverRos[1]).toFixed(1)}m`
                     : `Scale: ${pxPerMeter.toFixed(2)} px/m`}
                 </div>
                 <button
@@ -1519,7 +1497,7 @@ export function MapAnnotatorModal() {
                             min={0.5}
                             max={150}
                             step={0.5}
-                            value={selectedObj.source.shape.depth}
+                            value={selectedObj.terrainPlacement?.nominalHeight ?? selectedObj.source.shape.depth}
                             onChange={(e) => {
                               const nextH = Math.max(0.5, Number(e.target.value) || 1);
                               updateWorldObject(selectedObj.id, (draft) => {
@@ -1527,13 +1505,14 @@ export function MapAnnotatorModal() {
                                   draft.source.type === 'primitive' &&
                                   draft.source.shape.kind === 'extrude'
                                 ) {
-                                  const tz = sampleElevationAt(
-                                    mapBg,
-                                    draft.pose.xyz[0],
-                                    draft.pose.xyz[1],
-                                  );
                                   draft.source.shape.depth = nextH;
-                                  draft.pose.xyz[2] = Number((tz + nextH / 2).toFixed(3));
+                                  draft.terrainPlacement = {
+                                    ...draft.terrainPlacement,
+                                    kind: 'building',
+                                    followTerrain: true,
+                                    nominalHeight: nextH,
+                                  };
+                                  regroundWorldObjectToTerrain(draft, mapBg);
                                 }
                               });
                             }}
@@ -1552,7 +1531,7 @@ export function MapAnnotatorModal() {
                               min={0.2}
                               max={50}
                               step={0.25}
-                              value={selectedObj.source.shape.size[2]}
+                              value={selectedObj.terrainPlacement?.nominalHeight ?? selectedObj.source.shape.size[2]}
                               onChange={(e) => {
                                 const nextH = Math.max(0.2, Number(e.target.value) || 1);
                                 updateWorldObject(selectedObj.id, (draft) => {
@@ -1560,13 +1539,11 @@ export function MapAnnotatorModal() {
                                     draft.source.type === 'primitive' &&
                                     draft.source.shape.kind === 'box'
                                   ) {
-                                    const tz = sampleElevationAt(
-                                      mapBg,
-                                      draft.pose.xyz[0],
-                                      draft.pose.xyz[1],
-                                    );
                                     draft.source.shape.size[2] = nextH;
-                                    draft.pose.xyz[2] = Number((tz + nextH / 2).toFixed(3));
+                                    if (draft.terrainPlacement) {
+                                      draft.terrainPlacement.nominalHeight = nextH;
+                                    }
+                                    regroundWorldObjectToTerrain(draft, mapBg);
                                   }
                                 });
                               }}

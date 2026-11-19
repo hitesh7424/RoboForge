@@ -22,6 +22,7 @@ import type {
   Sensor,
   SurfaceZone,
   TargetDistro,
+  TerrainPlacement,
   TextureAsset,
   Vec3,
   World,
@@ -29,6 +30,7 @@ import type {
   WorldObject,
   WorldObjectSource,
 } from '@/core/schema';
+import { regroundAllWorldObjects } from '@/core/terrainGrounding';
 import { DEFAULT_WORLD_COSMETICS } from '@/core/worldZones';
 import { createFourWheelRoverProject } from '@/core/templates';
 
@@ -206,6 +208,7 @@ export interface RoboForgeState {
     gridSize?: number,
     centerElevation?: number,
   ) => void;
+  conformWorldObjectsToTerrain: () => void;
   setMapTileTexture: (base64: string | undefined) => void;
   addWorldObject: (
     name: string,
@@ -213,6 +216,7 @@ export interface RoboForgeState {
     pose?: Pose,
     isStatic?: boolean,
     mass?: number,
+    terrainPlacement?: TerrainPlacement,
   ) => WorldObject;
   updateWorldObject: (objectId: string, updater: (obj: WorldObject) => void) => void;
   deleteWorldObject: (objectId: string) => void;
@@ -1131,6 +1135,9 @@ export const useRoboForgeStore = create<RoboForgeState>()(
                 landWidthMeters: project.world.mapBackground.landWidthMeters,
                 landHeightMeters: project.world.mapBackground.landHeightMeters,
                 headingDeg: project.world.mapBackground.headingDeg,
+                elevationEnabled: project.world.mapBackground.elevationEnabled,
+                elevationScale: project.world.mapBackground.elevationScale,
+                elevationGrid: project.world.mapBackground.elevationGrid,
               }
             : null;
           updater(project.world);
@@ -1149,6 +1156,19 @@ export const useRoboForgeStore = create<RoboForgeState>()(
           ) {
             next.mapTextureBase64 = undefined;
           }
+          if (
+            next &&
+            (!prev ||
+              prev.elevationEnabled !== next.elevationEnabled ||
+              prev.elevationScale !== next.elevationScale ||
+              prev.elevationGrid !== next.elevationGrid ||
+              prev.headingDeg !== next.headingDeg ||
+              prev.landSizeMeters !== next.landSizeMeters ||
+              prev.landWidthMeters !== next.landWidthMeters ||
+              prev.landHeightMeters !== next.landHeightMeters)
+          ) {
+            regroundAllWorldObjects(project.world);
+          }
         });
       },
 
@@ -1163,7 +1183,15 @@ export const useRoboForgeStore = create<RoboForgeState>()(
           if (centerElevation !== undefined && Number.isFinite(centerElevation)) {
             m.elevation = centerElevation;
           }
+          regroundAllWorldObjects(state.project.world);
         });
+      },
+
+      conformWorldObjectsToTerrain: () => {
+        commitProject((project) => {
+          regroundAllWorldObjects(project.world);
+        });
+        get().addLog('info', 'Conformed walls, buildings, trees, props, and spawn pose to terrain.');
       },
 
       setMapTileTexture: (base64) => {
@@ -1175,7 +1203,7 @@ export const useRoboForgeStore = create<RoboForgeState>()(
         });
       },
 
-      addWorldObject: (name, source, pose, isStatic = true, mass) => {
+      addWorldObject: (name, source, pose, isStatic = true, mass, terrainPlacement) => {
         const existingNames = new Set(get().project.world.objects.map((o) => o.name));
         const obj: WorldObject = {
           id: createId(),
@@ -1184,6 +1212,7 @@ export const useRoboForgeStore = create<RoboForgeState>()(
           pose: pose ?? createZeroPose(),
           static: isStatic,
           ...(mass !== undefined ? { mass } : {}),
+          ...(terrainPlacement !== undefined ? { terrainPlacement } : {}),
         };
         commitProject((project) => {
           project.world.objects.push(obj);

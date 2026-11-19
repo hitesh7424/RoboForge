@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import type { SurfaceZone } from '@/core/schema';
 import { useRoboForgeStore } from '@/core/store';
+import { regroundWorldObjectToTerrain } from '@/core/terrainGrounding';
 import {
   BUILTIN_TEXTURE_PRESETS,
   getPresetPreviewDataUrl,
@@ -782,6 +783,9 @@ export function WorldStudioInspector() {
                       if (!Number.isFinite(v)) return;
                       updateWorldObject(selectedObj.id, (o) => {
                         o.pose.xyz[idx] = v;
+                        if (idx === 0 || idx === 1) {
+                          regroundWorldObjectToTerrain(o, project.world.mapBackground);
+                        }
                       });
                     }}
                     className="h-7 w-full rounded border border-[#2a3346] bg-[#0b0f17] px-1.5 font-mono text-[11px] text-slate-100"
@@ -789,6 +793,19 @@ export function WorldStudioInspector() {
                 </label>
               ))}
             </div>
+
+            <button
+              type="button"
+              data-testid="snap-selected-obj-terrain"
+              onClick={() =>
+                updateWorldObject(selectedObj.id, (o) => {
+                  regroundWorldObjectToTerrain(o, project.world.mapBackground);
+                })
+              }
+              className="w-full rounded border border-emerald-700/50 bg-emerald-950/35 px-2 py-1 text-[10px] font-medium text-emerald-200 hover:bg-emerald-900/45 cursor-pointer"
+            >
+              Snap &amp; Conform to Terrain
+            </button>
 
             {selectedObj.source.type === 'primitive' && (
               <div className="space-y-2.5 pt-1 border-t border-[#1e2636]">
