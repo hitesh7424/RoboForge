@@ -33,6 +33,10 @@ export const HUMBLE_TARGET: TargetConfig = {
       filename: 'ignition-gazebo-scene-broadcaster-system',
       name: 'ignition::gazebo::systems::SceneBroadcaster',
     },
+    contact: {
+      filename: 'ignition-gazebo-contact-system',
+      name: 'ignition::gazebo::systems::Contact',
+    },
     sensors: {
       filename: 'ignition-gazebo-sensors-system',
       name: 'ignition::gazebo::systems::Sensors',
@@ -40,6 +44,14 @@ export const HUMBLE_TARGET: TargetConfig = {
     imu: {
       filename: 'ignition-gazebo-imu-system',
       name: 'ignition::gazebo::systems::Imu',
+    },
+    airPressure: {
+      filename: 'ignition-gazebo-air-pressure-system',
+      name: 'ignition::gazebo::systems::AirPressure',
+    },
+    magnetometer: {
+      filename: 'ignition-gazebo-magnetometer-system',
+      name: 'ignition::gazebo::systems::Magnetometer',
     },
     navsat: {
       filename: 'ignition-gazebo-navsat-system',

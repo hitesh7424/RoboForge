@@ -35,11 +35,12 @@ export function buildBridgeEntries(project: Project, target: TargetConfig): Brid
     robot.plugins.some((p) => p.kind === 'joint_state_publisher') || robot.joints.length > 0;
   if (hasJointStatePub) {
     const jspPlugin = robot.plugins.find((p) => p.kind === 'joint_state_publisher');
+    const hasExplicitJsp = Boolean(jspPlugin && jspPlugin.kind === 'joint_state_publisher');
     const topic =
       jspPlugin && jspPlugin.kind === 'joint_state_publisher' ? jspPlugin.topic : '/joint_states';
     entries.push({
       rosTopic: topic,
-      gzTopic: `/world/${world.name}/model/${robot.name}/joint_state`,
+      gzTopic: hasExplicitJsp ? topic : `/world/${world.name}/model/${robot.name}/joint_state`,
       rosType: 'sensor_msgs/msg/JointState',
       gzType: `${msgPrefix}.Model`,
       direction: 'GZ_TO_ROS',

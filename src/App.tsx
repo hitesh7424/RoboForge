@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { Analytics } from '@vercel/analytics/react';
 import { PanelBottomOpen, PanelLeftOpen, PanelRightOpen } from 'lucide-react';
 import { Group, Panel, Separator, usePanelRef } from 'react-resizable-panels';
 import { loadAutosavedProject, saveAutosaveProject } from '@/core/persistence';
@@ -327,6 +328,7 @@ export default function App() {
       <PartEditorModal />
       <JointAttachDialog />
       <MapAnnotatorModal />
+      <Analytics />
     </div>
   );
 }

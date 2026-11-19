@@ -4,7 +4,6 @@ import { GizmoHelper, GizmoViewport, Grid } from '@react-three/drei';
 import { AlertTriangle, CheckCircle2, Crosshair, RotateCcw, Sliders } from 'lucide-react';
 import * as THREE from 'three';
 import URDFLoader, { type URDFRobot } from 'urdf-loader';
-import { ROS_TO_THREE_EULER } from '@/core/coords';
 import { useRoboForgeStore } from '@/core/store';
 import {
   formatLengthSummary,
@@ -54,8 +53,8 @@ function UrdfScene({
       <color attach="background" args={['#0b0e14']} />
       <StudioEnvironment />
       <ambientLight intensity={0.5} />
-      <directionalLight position={[3, 5, 3]} intensity={1.35} />
-      <directionalLight position={[-3, 2, -2]} intensity={0.45} color="#a5c4ff" />
+      <directionalLight position={[3, -3, 5]} intensity={1.35} />
+      <directionalLight position={[-3, 2, 2]} intensity={0.45} color="#a5c4ff" />
 
       <ViewportCameraRig
         projection={cameraProjection}
@@ -73,11 +72,12 @@ function UrdfScene({
         sectionSize={1}
         sectionThickness={1}
         sectionColor="#2b374e"
-        position={[0, -0.001, 0]}
+        rotation={[Math.PI / 2, 0, 0]}
+        position={[0, 0, -0.001]}
       />
 
       {robotObject && (
-        <group rotation={ROS_TO_THREE_EULER}>
+        <group>
           <primitive object={robotObject} />
         </group>
       )}

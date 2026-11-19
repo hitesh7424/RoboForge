@@ -27,7 +27,6 @@ import {
   computeLinkWorldMatrices,
   poseToRosMatrix,
   quaternionToRosRpy,
-  ROS_TO_THREE_EULER,
   rosMatrixToPose,
   rosRpyToQuaternion,
 } from '@/core/coords';
@@ -489,12 +488,12 @@ function RobotSceneContent({
       <StudioEnvironment />
       <ambientLight intensity={0.45} />
       <directionalLight
-        position={[3.5, 5.5, 4.0]}
+        position={[3.5, -4.0, 5.5]}
         intensity={1.35}
         castShadow={!soft}
         shadow-mapSize={[1024, 1024]}
       />
-      <directionalLight position={[-3.0, 2.5, -3.5]} intensity={0.45} color="#b6d0ff" />
+      <directionalLight position={[-3.0, 3.5, 2.5]} intensity={0.45} color="#b6d0ff" />
 
       <ViewportCameraRig
         projection={cameraProjection}
@@ -515,11 +514,12 @@ function RobotSceneContent({
         sectionColor="#2b374e"
         fadeDistance={16}
         fadeStrength={1.2}
-        position={[0, -0.001, 0]}
+        rotation={[Math.PI / 2, 0, 0]}
+        position={[0, 0, -0.001]}
       />
 
-      {/* World Origin ROS-to-Three conversion boundary (ROS X forward, Y left, Z up) */}
-      <group rotation={ROS_TO_THREE_EULER}>
+      {/* Native ROS Z-up World Frame (X forward, Y left, Z up) */}
+      <group>
         {/* Ground ROS axes indicator at origin */}
         <axesHelper args={[0.25]} />
 

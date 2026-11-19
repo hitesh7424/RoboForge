@@ -128,13 +128,19 @@ function renderUrdfGeometryBlocks(
 function renderLinkInertial(link: Link, massPropExpr?: string): string {
   const res = resolveLinkInertia(link);
   const i = res.inertia;
-  const com: [number, number, number] = link.inertial.auto
-    ? res.centerOfMass
-    : link.inertial.pose.xyz;
+  const useVisualPose = link.inertial.auto && link.visual.geometry.type === 'primitive';
+  const com: [number, number, number] = useVisualPose
+    ? link.visual.pose.xyz
+    : link.inertial.auto
+      ? res.centerOfMass
+      : link.inertial.pose.xyz;
+  const rpy: [number, number, number] = useVisualPose
+    ? link.visual.pose.rpy
+    : link.inertial.pose.rpy;
 
   return [
     `    <inertial>`,
-    `      <origin xyz="${fmtVec3(com)}" rpy="${fmtVec3(link.inertial.pose.rpy)}"/>`,
+    `      <origin xyz="${fmtVec3(com)}" rpy="${fmtVec3(rpy)}"/>`,
     `      <mass value="${massPropExpr ?? fmt(link.inertial.mass)}"/>`,
     `      <inertia ixx="${fmt(i.ixx, 8)}" ixy="${fmt(i.ixy, 8)}" ixz="${fmt(i.ixz, 8)}" iyy="${fmt(i.iyy, 8)}" iyz="${fmt(i.iyz, 8)}" izz="${fmt(i.izz, 8)}"/>`,
     `    </inertial>`,
@@ -237,7 +243,7 @@ export function generateRobotXacro(project: Project, target: TargetConfig): stri
     lines.push(`        <geometry><cylinder radius="\${radius}" length="\${length}"/></geometry>`);
     lines.push(`      </collision>`);
     lines.push(`      <inertial>`);
-    lines.push(`        <origin xyz="0 0 0" rpy="0 0 0"/>`);
+    lines.push(`        <origin xyz="\${rpy_xyz}" rpy="\${rpy_rot}"/>`);
     lines.push(`        <mass value="\${mass}"/>`);
     lines.push(
       `        <inertia ixx="\${(mass/12.0)*(3*radius*radius+length*length)}" ixy="0" ixz="0" iyy="\${(mass/12.0)*(3*radius*radius+length*length)}" iyz="0" izz="\${0.5*mass*radius*radius}"/>`,
@@ -440,6 +446,43 @@ export function generateGazeboXacro(project: Project, target: TargetConfig): str
     lines.push(`  </gazebo>`);
   }
 
+  // Wheel & caster surface friction tuning for smooth Gazebo contact & steering
+  const isSkidSteer = robot.plugins.some(
+    (p) =>
+      p.kind === 'diff_drive' && (p.leftJointIds.length > 1 || p.rightJointIds.length > 1),
+  );
+  const drivenWheelLinkIds = new Set<string>();
+  for (const plugin of robot.plugins) {
+    if (plugin.kind === 'diff_drive') {
+      for (const jId of [...plugin.leftJointIds, ...plugin.rightJointIds]) {
+        const j = jointMap.get(jId);
+        if (j) drivenWheelLinkIds.add(j.child.linkId);
+      }
+    } else if (plugin.kind === 'ackermann') {
+      for (const jId of [plugin.leftWheelJointId, plugin.rightWheelJointId]) {
+        const j = jointMap.get(jId);
+        if (j) drivenWheelLinkIds.add(j.child.linkId);
+      }
+    }
+  }
+  for (const link of robot.links) {
+    const isCaster = link.name.toLowerCase().includes('caster');
+    const isWheel = drivenWheelLinkIds.has(link.id) || link.name.toLowerCase().includes('wheel');
+    if (isCaster) {
+      lines.push(``);
+      lines.push(`  <gazebo reference="${escapeXml(link.name)}">`);
+      lines.push(`    <mu1>0.01</mu1>`);
+      lines.push(`    <mu2>0.01</mu2>`);
+      lines.push(`  </gazebo>`);
+    } else if (isWheel) {
+      lines.push(``);
+      lines.push(`  <gazebo reference="${escapeXml(link.name)}">`);
+      lines.push(`    <mu1>1.0</mu1>`);
+      lines.push(`    <mu2>${isSkidSteer ? '0.5' : '1.0'}</mu2>`);
+      lines.push(`  </gazebo>`);
+    }
+  }
+
   // Model-level plugins
   if (robot.plugins.length > 0) {
     lines.push(``);
@@ -459,12 +502,17 @@ export function generateGazeboXacro(project: Project, target: TargetConfig): str
         }
         lines.push(`      <wheel_separation>${fmt(plugin.wheelSeparation)}</wheel_separation>`);
         lines.push(`      <wheel_radius>${fmt(plugin.wheelRadius)}</wheel_radius>`);
+        if (plugin.maxLinearAcceleration !== undefined) {
+          lines.push(
+            `      <max_linear_acceleration>${fmt(plugin.maxLinearAcceleration)}</max_linear_acceleration>`,
+          );
+        }
         lines.push(`      <odom_publish_frequency>50</odom_publish_frequency>`);
         lines.push(`      <topic>${escapeXml(plugin.cmdVelTopic)}</topic>`);
         lines.push(`      <odom_topic>${escapeXml(plugin.odomTopic)}</odom_topic>`);
         lines.push(`      <tf_topic>/tf</tf_topic>`);
         lines.push(`      <frame_id>odom</frame_id>`);
-        lines.push(`      <child_frame_id>${escapeXml(rootName)}</child_frame_id>`);
+        lines.push(`      <child_frame_id>${escapeXml(rootName)}_footprint</child_frame_id>`);
         lines.push(`    </plugin>`);
       } else if (plugin.kind === 'ackermann') {
         const spec = target.robotPlugins.ackermann;

@@ -12,7 +12,6 @@ import {
   Upload,
   Wrench,
 } from 'lucide-react';
-import { ROS_TO_THREE_EULER } from '@/core/coords';
 import { createId, createZeroPose } from '@/core/defaults';
 import type { Asset, CompoundPart, CustomPart, Geometry, Mount, Primitive } from '@/core/schema';
 import { useRoboForgeStore } from '@/core/store';
@@ -58,22 +57,23 @@ function PartPreviewCanvas({
       frameloop="demand"
       dpr={soft ? 1 : [1, 2]}
       gl={{ antialias: !soft }}
-      camera={{ position: [0.85, 0.65, 0.85], fov: 45, near: 0.01, far: 50 }}
+      camera={{ position: [0.85, -0.85, 0.65], up: [0, 0, 1], fov: 45, near: 0.01, far: 50 }}
     >
       <color attach="background" args={['#0b0e14']} />
       <StudioEnvironment />
       <ambientLight intensity={0.5} />
-      <directionalLight position={[2, 4, 3]} intensity={1.3} />
+      <directionalLight position={[2, -3, 4]} intensity={1.3} />
       <Grid
         args={[4, 4]}
         cellSize={0.1}
         sectionSize={0.5}
         cellColor="#1c2434"
         sectionColor="#2d3b54"
+        rotation={[Math.PI / 2, 0, 0]}
       />
       <SceneSync />
 
-      <group rotation={ROS_TO_THREE_EULER}>
+      <group>
         <GeometryRenderer
           geometry={geometry}
           material={{ name: 'part_preview', rgba: [0.32, 0.56, 0.86, 1] }}

@@ -1,12 +1,17 @@
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
-import { computeElevationStats, downloadMapTilesTextureBase64 } from '@/core/mapTiles';
+import {
+  computeElevationStats,
+  DEFAULT_MAP_BACKGROUND,
+  downloadMapTilesTextureBase64,
+} from '@/core/mapTiles';
 import {
   createFallbackMapPng,
   encodeGrayscalePng,
   resampleDemToGazeboPixels,
 } from '@/core/pngEncode';
 import type { Project } from '@/core/schema';
+import { generateTerrainObj, shouldUseTerrainMesh } from '@/core/terrainMesh';
 import { generateBridgeYaml } from '@/exporters/bridge';
 import { generateDisplayLaunchPy, generateSimLaunchPy } from '@/exporters/launch';
 import { generateMujocoXml } from '@/exporters/mjcf';
@@ -57,18 +62,29 @@ export function exportRos2Package(project: Project, overrideTarget?: TargetConfi
     'README.md': generatePackageReadme(project, target),
   };
 
-  if (project.assets.length === 0) {
+  const textures = project.textures ?? [];
+  const mapBg = project.world.mapBackground;
+  const elevStats = computeElevationStats(mapBg);
+  const useTerrainMesh = project.world.ground.enabled && shouldUseTerrainMesh(mapBg);
+  let hasGeneratedMeshes = false;
+  let hasGeneratedTextures = false;
+
+  if (useTerrainMesh) {
+    const landSize = Math.max(
+      10,
+      mapBg?.landSizeMeters ?? DEFAULT_MAP_BACKGROUND.landSizeMeters,
+    );
+    files[`meshes/${worldName}_terrain.obj`] = generateTerrainObj(landSize, mapBg);
+    hasGeneratedMeshes = true;
+  }
+
+  if (project.assets.length === 0 && !hasGeneratedMeshes) {
     files['meshes/.gitkeep'] = '';
   } else {
     for (const asset of project.assets) {
       files[`meshes/${asset.name}.${asset.format}`] = base64ToUint8Array(asset.dataBase64);
     }
   }
-
-  const textures = project.textures ?? [];
-  const mapBg = project.world.mapBackground;
-  const elevStats = computeElevationStats(mapBg);
-  let hasGeneratedTextures = false;
 
   if (project.world.ground.enabled && mapBg?.enabled) {
     // 1. Always export the georeferenced map tile ground texture (<world>_map.png)
@@ -78,7 +94,7 @@ export function exportRos2Package(project: Project, overrideTarget?: TargetConfi
     files[`materials/textures/${worldName}_map.png`] = mapPngBytes;
     hasGeneratedTextures = true;
 
-    // 2. Always export a Gazebo-compliant (2^k + 1 = 65x65) grayscale DEM heightmap (<world>_dem.png)
+    // 2. Also bundle a Gazebo-compliant (2^k + 1 = 65x65) grayscale DEM reference (<world>_dem.png)
     const demPixels = resampleDemToGazeboPixels(
       mapBg.elevationGrid,
       mapBg.elevationGridSize ?? 2,

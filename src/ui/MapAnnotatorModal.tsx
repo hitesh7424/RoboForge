@@ -22,7 +22,7 @@ import {
   ZoomOut,
 } from 'lucide-react';
 import * as THREE from 'three';
-import { poseToRosMatrix, ROS_TO_THREE_EULER } from '@/core/coords';
+import { poseToRosMatrix } from '@/core/coords';
 import {
   computeMapTileGridForExtent,
   DEFAULT_MAP_BACKGROUND,
@@ -130,8 +130,8 @@ function LiveMapPreviewScene({
       <color attach="background" args={['#090d14']} />
       <StudioEnvironment />
       <ambientLight intensity={0.5} />
-      <directionalLight position={[25, 45, 25]} intensity={1.35} castShadow={false} />
-      <directionalLight position={[-20, 15, -20]} intensity={0.45} color="#a5c4ff" />
+      <directionalLight position={[25, -25, 45]} intensity={1.35} castShadow={false} />
+      <directionalLight position={[-20, 20, 15]} intensity={0.45} color="#a5c4ff" />
 
       <ViewportCameraRig
         projection="perspective"
@@ -143,7 +143,7 @@ function LiveMapPreviewScene({
         maxDistance={Infinity}
       />
 
-      <group rotation={ROS_TO_THREE_EULER}>
+      <group>
         <WorldGroundTerrainMesh
           ground={project.world.ground}
           mapBackground={project.world.mapBackground}

@@ -157,7 +157,7 @@ describe('ROS 2 package exporters across Jazzy, Humble, and Lyrical targets', ()
     expect(files['materials/textures/asphalt_tile.png']).toBeInstanceOf(Uint8Array);
   });
 
-  it('exports DEM heightmap PNG and building polygon polylines in Gazebo world SDF', () => {
+  it('exports exact triangulated DEM terrain OBJ, PX4/UAV world plugins, and building polylines in Gazebo world SDF', () => {
     const project = createFourWheelRoverProject('jazzy-harmonic');
     project.world.mapBackground = {
       enabled: true,
@@ -172,7 +172,7 @@ describe('ROS 2 package exporters across Jazzy, Humble, and Lyrical targets', ()
       elevationEnabled: true,
       elevationSource: 'terrarium',
       elevationScale: 1,
-      terrainSegments: 4,
+      terrainSegments: 16,
       elevationGridSize: 2,
       elevationGrid: [-2, 0, 1, 4],
     };
@@ -199,15 +199,37 @@ describe('ROS 2 package exporters across Jazzy, Humble, and Lyrical targets', ()
 
     const files = exportRos2Package(project);
     const worldSdf = files['worlds/rover_arena.sdf'] as string;
-    expect(worldSdf).toContain('<heightmap><uri>model://scout_rover_pkg/materials/textures/rover_arena_dem.png</uri><size>150 150 6</size><pos>0 0 -2</pos></heightmap>');
-    expect(worldSdf).toContain('<diffuse>model://scout_rover_pkg/materials/textures/rover_arena_map.png</diffuse>');
-    expect(worldSdf).toContain('<albedo_map>model://scout_rover_pkg/materials/textures/rover_arena_map.png</albedo_map>');
-    expect(worldSdf).toContain('<polyline><point>-3 -2</point><point>3 -2</point><point>3 2</point><point>-3 2</point><height>12</height></polyline>');
+
+    // Terrain uses identical OBJ mesh for visual & collision (no buggy <heightmap><pos> Z-offset)
+    expect(worldSdf).not.toContain('<heightmap>');
+    expect(worldSdf).toContain(
+      '<mesh><uri>model://scout_rover_pkg/meshes/rover_arena_terrain.obj</uri><scale>1 1 1</scale></mesh>',
+    );
+    expect(worldSdf).toContain(
+      '<albedo_map>model://scout_rover_pkg/materials/textures/rover_arena_map.png</albedo_map>',
+    );
+    expect(worldSdf).toContain('<bounce><restitution_coefficient>0</restitution_coefficient></bounce>');
+
+    // Full Gazebo / PX4 world sensor plugins & environment tags
+    expect(worldSdf).toContain('gz-sim-contact-system');
+    expect(worldSdf).toContain('gz-sim-air-pressure-system');
+    expect(worldSdf).toContain('gz-sim-magnetometer-system');
+    expect(worldSdf).toContain('<magnetic_field>');
+    expect(worldSdf).toContain('<atmosphere type="adiabatic"/>');
+    expect(worldSdf).toContain('<real_time_update_rate>1000</real_time_update_rate>');
+
+    expect(worldSdf).toContain(
+      '<polyline><point>-3 -2</point><point>3 -2</point><point>3 2</point><point>-3 2</point><height>12</height></polyline>',
+    );
+
+    const terrainObj = files['meshes/rover_arena_terrain.obj'] as string;
+    expect(typeof terrainObj).toBe('string');
+    expect(terrainObj).toContain('o terrain');
+    expect(terrainObj).toContain('v 0 0 0.75'); // bilinear average of [-2,0,1,4] = 0.75
 
     const demBytes = files['materials/textures/rover_arena_dem.png'] as Uint8Array;
     expect(demBytes).toBeInstanceOf(Uint8Array);
     expect(Array.from(demBytes.slice(0, 8))).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
-    // Verify Gazebo (2^k + 1) = 65x65 IHDR dimensions at bytes 16..23
     const demView = new DataView(demBytes.buffer, demBytes.byteOffset, demBytes.byteLength);
     expect(demView.getUint32(16, false)).toBe(65);
     expect(demView.getUint32(20, false)).toBe(65);
@@ -217,12 +239,25 @@ describe('ROS 2 package exporters across Jazzy, Humble, and Lyrical targets', ()
     expect(Array.from(mapBytes.slice(0, 8))).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
 
     const simLaunch = files['launch/sim.launch.py'] as string;
-    expect(simLaunch).toContain("AppendEnvironmentVariable");
+    expect(simLaunch).toContain('AppendEnvironmentVariable');
     expect(simLaunch).toContain("name='GZ_SIM_RESOURCE_PATH'");
     expect(simLaunch).toContain("name='IGN_GAZEBO_RESOURCE_PATH'");
+    // Spawn Z is safely clamped above local terrain height (0.75 + 0.15 = 0.9)
+    expect(simLaunch).toContain("'-z', '0.9'");
 
     const robotXacro = files['urdf/scout_rover.urdf.xacro'] as string;
     expect(robotXacro).toContain('<link name="base_link_footprint"/>');
+    // Wheel inertial origin matches rotated wheel cylinder
+    expect(robotXacro).toContain('<origin xyz="${rpy_xyz}" rpy="${rpy_rot}"/>');
+
+    const gazeboXacro = files['urdf/scout_rover_gazebo.xacro'] as string;
+    expect(gazeboXacro).toContain('<child_frame_id>base_link_footprint</child_frame_id>');
+    expect(gazeboXacro).toContain('<max_linear_acceleration>1.5</max_linear_acceleration>');
+    expect(gazeboXacro).toContain('<mu1>1.0</mu1>');
+    expect(gazeboXacro).toContain('<mu2>0.5</mu2>');
+
+    const bridgeYaml = files['config/bridge.yaml'] as string;
+    expect(bridgeYaml).toContain('ros_topic_name: "/joint_states"\n  gz_topic_name: "/joint_states"');
   });
 });
 

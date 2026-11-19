@@ -1,5 +1,7 @@
-import { computeElevationStats, DEFAULT_MAP_BACKGROUND } from '@/core/mapTiles';
+import { computeGeometryInertia } from '@/core/inertia';
+import { DEFAULT_MAP_BACKGROUND, sampleElevationAt } from '@/core/mapTiles';
 import type { Primitive, Project, TextureAsset } from '@/core/schema';
+import { shouldUseTerrainMesh } from '@/core/terrainMesh';
 import {
   computeTreeInertial,
   getPineTierVisualRadius,
@@ -44,31 +46,41 @@ function renderPbrAlbedoXml(
   const tex = textures.find((t) => t.id === textureId);
   if (!tex) return [];
   return [
-    `${indent}<pbr><metal><albedo_map>model://${escapeXml(pkgName)}/materials/textures/${escapeXml(tex.name)}.${tex.format}</albedo_map></metal></pbr>`,
+    `${indent}<pbr><metal><albedo_map>model://${escapeXml(pkgName)}/materials/textures/${escapeXml(tex.name)}.${tex.format}</albedo_map><roughness>0.9</roughness><metalness>0</metalness></metal></pbr>`,
   ];
 }
 
 export function generateWorldSdf(project: Project, target: TargetConfig): string {
   const { world, textures = [], name: pkgName } = project;
   const sys = target.worldSystems;
+  const updateRate = Math.max(
+    1,
+    Math.round(world.physics.realTimeFactor / Math.max(0.0001, world.physics.stepSize)),
+  );
 
   const lines: string[] = [
     `<?xml version="1.0"?>`,
     `<sdf version="${target.sdfVersion}">`,
     `  <world name="${escapeXml(world.name)}">`,
-    `    <physics name="default_physics" type="ode">`,
+    `    <physics name="default_physics" type="ignored">`,
     `      <max_step_size>${fmt(world.physics.stepSize)}</max_step_size>`,
     `      <real_time_factor>${fmt(world.physics.realTimeFactor)}</real_time_factor>`,
+    `      <real_time_update_rate>${fmt(updateRate)}</real_time_update_rate>`,
     `    </physics>`,
     `    <gravity>${fmtVec3(world.physics.gravity)}</gravity>`,
+    `    <magnetic_field>6e-06 2.3e-05 -4.2e-05</magnetic_field>`,
+    `    <atmosphere type="adiabatic"/>`,
     ``,
     `    <plugin filename="${sys.physics.filename}" name="${sys.physics.name}"/>`,
     `    <plugin filename="${sys.userCommands.filename}" name="${sys.userCommands.name}"/>`,
     `    <plugin filename="${sys.sceneBroadcaster.filename}" name="${sys.sceneBroadcaster.name}"/>`,
+    `    <plugin filename="${sys.contact.filename}" name="${sys.contact.name}"/>`,
     `    <plugin filename="${sys.sensors.filename}" name="${sys.sensors.name}">`,
     `      <render_engine>${target.sensorRenderEngine}</render_engine>`,
     `    </plugin>`,
     `    <plugin filename="${sys.imu.filename}" name="${sys.imu.name}"/>`,
+    `    <plugin filename="${sys.airPressure.filename}" name="${sys.airPressure.name}"/>`,
+    `    <plugin filename="${sys.magnetometer.filename}" name="${sys.magnetometer.name}"/>`,
     `    <plugin filename="${sys.navsat.filename}" name="${sys.navsat.name}"/>`,
   ];
 
@@ -103,7 +115,7 @@ export function generateWorldSdf(project: Project, target: TargetConfig): string
     lines.push(`    </light>`);
   }
 
-  // Ground plane (or DEM heightmap if elevation relief is active)
+  // Ground plane (or exact triangulated DEM terrain mesh when elevation relief is active)
   if (world.ground.enabled) {
     const mapBg = world.mapBackground;
     const landSize = Math.max(
@@ -112,11 +124,7 @@ export function generateWorldSdf(project: Project, target: TargetConfig): string
     );
     const gx = mapBg?.enabled ? Math.max(world.ground.size[0], landSize) : world.ground.size[0];
     const gy = mapBg?.enabled ? Math.max(world.ground.size[1], landSize) : world.ground.size[1];
-    const elevStats = computeElevationStats(mapBg);
-    const useHeightmap =
-      Boolean(mapBg?.enabled) &&
-      elevStats.hasRelief &&
-      (mapBg?.elevationGridSize ?? 0) >= 2;
+    const useTerrainMesh = shouldUseTerrainMesh(mapBg);
     const customGroundTex = world.ground.textureId
       ? textures.find((t) => t.id === world.ground.textureId)
       : undefined;
@@ -126,44 +134,47 @@ export function generateWorldSdf(project: Project, target: TargetConfig): string
     const activeGroundTexUri = customGroundTex
       ? `model://${escapeXml(pkgName)}/materials/textures/${escapeXml(customGroundTex.name)}.${customGroundTex.format}`
       : mapTileTexUri;
-    const demUri = `model://${escapeXml(pkgName)}/materials/textures/${escapeXml(world.name)}_dem.png`;
+    const terrainMeshUri = `model://${escapeXml(pkgName)}/meshes/${escapeXml(world.name)}_terrain.obj`;
+    // Keep map-tile plane 1:1 true-to-scale with cropped landSizeMeters when flat
+    const visGx = !customGroundTex && mapBg?.enabled ? landSize : gx;
+    const visGy = !customGroundTex && mapBg?.enabled ? landSize : gy;
 
     lines.push(``);
     lines.push(`    <model name="ground_plane">`);
     lines.push(`      <static>true</static>`);
     lines.push(`      <link name="link">`);
     lines.push(`        <collision name="collision">`);
-    if (useHeightmap) {
+    if (useTerrainMesh) {
       lines.push(
-        `          <geometry><heightmap><uri>${demUri}</uri><size>${fmt(landSize)} ${fmt(landSize)} ${fmt(elevStats.rangeZ)}</size><pos>0 0 ${fmt(elevStats.minZ)}</pos></heightmap></geometry>`,
+        `          <geometry><mesh><uri>${terrainMeshUri}</uri><scale>1 1 1</scale></mesh></geometry>`,
       );
     } else {
       lines.push(
         `          <geometry><plane><normal>0 0 1</normal><size>${fmt(gx)} ${fmt(gy)}</size></plane></geometry>`,
       );
     }
+    lines.push(`          <surface>`);
     lines.push(
-      `          <surface><friction><ode><mu>${fmt(world.ground.friction)}</mu><mu2>${fmt(world.ground.friction)}</mu2></ode></friction></surface>`,
+      `            <friction><ode><mu>${fmt(world.ground.friction)}</mu><mu2>${fmt(world.ground.friction)}</mu2></ode></friction>`,
     );
+    lines.push(`            <bounce><restitution_coefficient>0</restitution_coefficient></bounce>`);
+    lines.push(`          </surface>`);
     lines.push(`        </collision>`);
     lines.push(`        <visual name="visual">`);
-    if (useHeightmap) {
-      const hmTexXml = activeGroundTexUri
-        ? `<use_terrain_paging>false</use_terrain_paging><texture><diffuse>${activeGroundTexUri}</diffuse><normal>${activeGroundTexUri}</normal><size>${fmt(landSize)}</size></texture>`
-        : '';
+    if (useTerrainMesh) {
       lines.push(
-        `          <geometry><heightmap>${hmTexXml}<uri>${demUri}</uri><size>${fmt(landSize)} ${fmt(landSize)} ${fmt(elevStats.rangeZ)}</size><pos>0 0 ${fmt(elevStats.minZ)}</pos></heightmap></geometry>`,
+        `          <geometry><mesh><uri>${terrainMeshUri}</uri><scale>1 1 1</scale></mesh></geometry>`,
       );
     } else {
       lines.push(
-        `          <geometry><plane><normal>0 0 1</normal><size>${fmt(gx)} ${fmt(gy)}</size></plane></geometry>`,
+        `          <geometry><plane><normal>0 0 1</normal><size>${fmt(visGx)} ${fmt(visGy)}</size></plane></geometry>`,
       );
     }
     if (activeGroundTexUri) {
       lines.push(`          <material>`);
       lines.push(`            <ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse>`);
       lines.push(
-        `            <pbr><metal><albedo_map>${activeGroundTexUri}</albedo_map></metal></pbr>`,
+        `            <pbr><metal><albedo_map>${activeGroundTexUri}</albedo_map><roughness>0.95</roughness><metalness>0</metalness></metal></pbr>`,
       );
       lines.push(`          </material>`);
     } else {
@@ -249,7 +260,16 @@ export function generateWorldSdf(project: Project, target: TargetConfig): string
     lines.push(`      <link name="link">`);
     if (!obj.static) {
       const m = obj.mass ?? 5.0;
-      lines.push(`        <inertial><mass>${fmt(m)}</mass></inertial>`);
+      const { inertia } = computeGeometryInertia(
+        { type: 'primitive', shape: obj.source.shape },
+        m,
+      );
+      lines.push(`        <inertial>`);
+      lines.push(`          <mass>${fmt(m)}</mass>`);
+      lines.push(
+        `          <inertia><ixx>${fmt(inertia.ixx, 6)}</ixx><ixy>0</ixy><ixz>0</ixz><iyy>${fmt(inertia.iyy, 6)}</iyy><iyz>0</iyz><izz>${fmt(inertia.izz, 6)}</izz></inertia>`,
+      );
+      lines.push(`        </inertial>`);
     }
     lines.push(`        <collision name="collision">`);
     if (polyOffsetLine) lines.push(polyOffsetLine);
@@ -273,9 +293,23 @@ export function generateWorldSdf(project: Project, target: TargetConfig): string
     lines.push(`    </model>`);
   }
 
+  const terrainZ = sampleElevationAt(
+    world.mapBackground,
+    world.robotSpawnPose.xyz[0],
+    world.robotSpawnPose.xyz[1],
+  );
+  const safeSpawn = {
+    xyz: [
+      world.robotSpawnPose.xyz[0],
+      world.robotSpawnPose.xyz[1],
+      Math.max(world.robotSpawnPose.xyz[2], terrainZ + 0.15),
+    ] as [number, number, number],
+    rpy: world.robotSpawnPose.rpy,
+  };
+
   lines.push(``);
   lines.push(
-    `    <!-- Robot "${escapeXml(project.robot.name)}" spawned at ${fmtPoseSdf(world.robotSpawnPose)} via sim.launch.py -->`,
+    `    <!-- Robot "${escapeXml(project.robot.name)}" spawned at ${fmtPoseSdf(safeSpawn)} via sim.launch.py -->`,
   );
   lines.push(`  </world>`);
   lines.push(`</sdf>`);

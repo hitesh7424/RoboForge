@@ -30,8 +30,17 @@ export const LYRICAL_TARGET: TargetConfig = {
       filename: 'gz-sim-scene-broadcaster-system',
       name: 'gz::sim::systems::SceneBroadcaster',
     },
+    contact: { filename: 'gz-sim-contact-system', name: 'gz::sim::systems::Contact' },
     sensors: { filename: 'gz-sim-sensors-system', name: 'gz::sim::systems::Sensors' },
     imu: { filename: 'gz-sim-imu-system', name: 'gz::sim::systems::Imu' },
+    airPressure: {
+      filename: 'gz-sim-air-pressure-system',
+      name: 'gz::sim::systems::AirPressure',
+    },
+    magnetometer: {
+      filename: 'gz-sim-magnetometer-system',
+      name: 'gz::sim::systems::Magnetometer',
+    },
     navsat: { filename: 'gz-sim-navsat-system', name: 'gz::sim::systems::NavSat' },
   },
   robotPlugins: {

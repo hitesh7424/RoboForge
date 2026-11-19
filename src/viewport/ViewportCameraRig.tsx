@@ -6,14 +6,17 @@ import * as THREE from 'three';
 import type { CameraProjection, CameraViewPreset } from '@/core/store';
 import { isSoftwareGlRenderer } from '@/viewport/webglCaps';
 
+// Set Three.js global default up vector to ROS Z-up (+Z vertical, +X forward, +Y left)
+THREE.Object3D.DEFAULT_UP.set(0, 0, 1);
+
 const VIEW_DIRECTIONS: Record<CameraViewPreset, THREE.Vector3> = {
-  iso: new THREE.Vector3(1, 0.72, 1).normalize(),
-  top: new THREE.Vector3(0, 1, 0.001).normalize(),
-  bottom: new THREE.Vector3(0, -1, 0.001).normalize(),
-  front: new THREE.Vector3(1, 0.02, 0).normalize(),
-  back: new THREE.Vector3(-1, 0.02, 0).normalize(),
-  left: new THREE.Vector3(0, 0.02, -1).normalize(),
-  right: new THREE.Vector3(0, 0.02, 1).normalize(),
+  iso: new THREE.Vector3(1, -1, 0.72).normalize(),
+  top: new THREE.Vector3(-0.001, 0, 1).normalize(),
+  bottom: new THREE.Vector3(0.001, 0, -1).normalize(),
+  front: new THREE.Vector3(1, 0, 0.02).normalize(),
+  back: new THREE.Vector3(-1, 0, 0.02).normalize(),
+  left: new THREE.Vector3(0, 1, 0.02).normalize(),
+  right: new THREE.Vector3(0, -1, 0.02).normalize(),
 };
 
 const FOV_DEG = 45;
@@ -243,12 +246,18 @@ export function ViewportCameraRig({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    camera.up.set(0, 0, 1);
+    orbitRef.current?.update();
+  }, [camera, projection, orbitRef]);
+
   return (
     <>
       {projection === 'orthographic' ? (
         <OrthographicCamera
           ref={orthoRef}
           makeDefault
+          up={[0, 0, 1]}
           position={initialPos}
           zoom={initialOrthoZoom}
           near={-10000}
@@ -258,6 +267,7 @@ export function ViewportCameraRig({
         <PerspectiveCamera
           ref={perspRef}
           makeDefault
+          up={[0, 0, 1]}
           position={initialPos}
           fov={FOV_DEG}
           near={0.05}

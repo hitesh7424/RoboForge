@@ -23,8 +23,11 @@ export interface TargetConfig {
     physics: GazeboPluginSpec;
     userCommands: GazeboPluginSpec;
     sceneBroadcaster: GazeboPluginSpec;
+    contact: GazeboPluginSpec;
     sensors: GazeboPluginSpec;
     imu: GazeboPluginSpec;
+    airPressure: GazeboPluginSpec;
+    magnetometer: GazeboPluginSpec;
     navsat: GazeboPluginSpec;
   };
   robotPlugins: {

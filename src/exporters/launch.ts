@@ -1,3 +1,4 @@
+import { sampleElevationAt } from '@/core/mapTiles';
 import type { Project } from '@/core/schema';
 import type { TargetConfig } from '@/exporters/targets/types';
 import { fmt } from '@/exporters/xmlUtils';
@@ -7,6 +8,8 @@ export function generateSimLaunchPy(project: Project, target: TargetConfig): str
   const robotName = project.robot.name;
   const worldName = project.world.name;
   const spawn = project.world.robotSpawnPose;
+  const terrainZ = sampleElevationAt(project.world.mapBackground, spawn.xyz[0], spawn.xyz[1]);
+  const safeSpawnZ = Math.max(spawn.xyz[2], terrainZ + 0.15);
 
   return `import os
 from ament_index_python.packages import get_package_share_directory
@@ -69,7 +72,7 @@ def generate_launch_description():
             '-name', '${robotName}',
             '-x', '${fmt(spawn.xyz[0])}',
             '-y', '${fmt(spawn.xyz[1])}',
-            '-z', '${fmt(spawn.xyz[2])}',
+            '-z', '${fmt(safeSpawnZ)}',
             '-R', '${fmt(spawn.rpy[0])}',
             '-P', '${fmt(spawn.rpy[1])}',
             '-Y', '${fmt(spawn.rpy[2])}',

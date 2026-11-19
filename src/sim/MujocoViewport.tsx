@@ -49,8 +49,6 @@ import {
   computeLinkWorldMatrices,
   poseToRosMatrix,
   quaternionToRosRpy,
-  ROS_TO_THREE_EULER,
-  rosVec3ToThree,
 } from '@/core/coords';
 import { ROBOFORGE_DRAG_MIME, type LibraryDragPayload } from '@/core/dragTypes';
 import {
@@ -859,7 +857,7 @@ function MujocoSceneContent({
 
       {project.world.lights.length > 0 ? (
         project.world.lights.map((light) => {
-          const pos = rosVec3ToThree(light.pose.xyz);
+          const pos = light.pose.xyz;
           const color = new THREE.Color(light.diffuse[0], light.diffuse[1], light.diffuse[2]);
           if (light.type === 'directional') {
             return (
@@ -884,13 +882,13 @@ function MujocoSceneContent({
         })
       ) : (
         <directionalLight
-          position={[4, 6, 4]}
+          position={[4, -4, 6]}
           intensity={1.35}
           castShadow={!soft}
           shadow-mapSize={[1024, 1024]}
         />
       )}
-      <directionalLight position={[-3, 2.5, -3]} intensity={0.4} color="#b6d0ff" />
+      <directionalLight position={[-3, 3, 2.5]} intensity={0.4} color="#b6d0ff" />
 
       <ViewportCameraRig
         projection={cameraProjection}
@@ -925,12 +923,13 @@ function MujocoSceneContent({
             sectionColor="#2d3b54"
             fadeDistance={Math.max(80, gridExtent * 1.1)}
             fadeStrength={1}
-            position={[0, 0.002, 0]}
+            rotation={[Math.PI / 2, 0, 0]}
+            position={[0, 0, 0.002]}
           />
         );
       })()}
 
-      <group rotation={ROS_TO_THREE_EULER}>
+      <group>
         {/* Raycastable Environment (Unified Map-Textured DEM Terrain / Ground + World Objects) */}
         <group ref={raycastGroupRef}>
           <WorldGroundTerrainMesh

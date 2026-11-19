@@ -216,10 +216,11 @@ export function WorldGroundTerrainMesh({
         >
           <meshStandardMaterial
             key={activeMap ? 'map-terrain-tex' : 'map-terrain-flat'}
-            color={activeMap ? '#ffffff' : '#1b2432'}
+            color={activeMap ? '#d6dce6' : '#1b2432'}
             map={activeMap ?? undefined}
-            roughness={0.94}
-            metalness={0.02}
+            roughness={1}
+            metalness={0}
+            envMapIntensity={0}
             transparent={opacity < 0.999}
             opacity={opacity}
             side={THREE.DoubleSide}

@@ -49,6 +49,7 @@ function renderSdfGeometryElements(
   assets: Asset[],
   material?: Material,
   textures: TextureAsset[] = [],
+  friction?: { mu: number; mu2: number },
 ): string {
   const tex = material?.textureId
     ? textures.find((t) => t.id === material.textureId)
@@ -61,11 +62,15 @@ function renderSdfGeometryElements(
           `          <diffuse>${material.rgba.map((c) => fmt(c, 3)).join(' ')}</diffuse>`,
           ...(tex
             ? [
-                `          <pbr><metal><albedo_map>model://${escapeXml(pkgName)}/materials/textures/${escapeXml(tex.name)}.${tex.format}</albedo_map></metal></pbr>`,
+                `          <pbr><metal><albedo_map>model://${escapeXml(pkgName)}/materials/textures/${escapeXml(tex.name)}.${tex.format}</albedo_map><roughness>0.9</roughness><metalness>0</metalness></metal></pbr>`,
               ]
             : []),
           `        </material>`,
         ].join('\n')
+      : '';
+  const surfaceBlock =
+    tag === 'collision' && friction
+      ? `        <surface><friction><ode><mu>${fmt(friction.mu)}</mu><mu2>${fmt(friction.mu2)}</mu2></ode></friction></surface>`
       : '';
 
   if (geometry.type === 'primitive') {
@@ -75,6 +80,7 @@ function renderSdfGeometryElements(
       `        <geometry>`,
       renderSdfPrimitiveXml(geometry.shape, '          '),
       `        </geometry>`,
+      ...(surfaceBlock ? [surfaceBlock] : []),
       ...(matBlock ? [matBlock] : []),
       `      </${tag}>`,
     ].join('\n');
@@ -87,6 +93,7 @@ function renderSdfGeometryElements(
         `      <${tag} name="${escapeXml(baseName)}_${tag}">`,
         `        <pose>${fmtPoseSdf(basePose)}</pose>`,
         `        <geometry><box><size>0.1 0.1 0.1</size></box></geometry>`,
+        ...(surfaceBlock ? [surfaceBlock] : []),
         ...(matBlock ? [matBlock] : []),
         `      </${tag}>`,
       ].join('\n');
@@ -100,6 +107,7 @@ function renderSdfGeometryElements(
           `        <geometry>`,
           renderSdfPrimitiveXml(part.shape, '          '),
           `        </geometry>`,
+          ...(surfaceBlock ? [surfaceBlock] : []),
           ...(matBlock ? [matBlock] : []),
           `      </${tag}>`,
         ].join('\n');
@@ -118,6 +126,7 @@ function renderSdfGeometryElements(
     `        <geometry>`,
     `          <mesh><uri>${meshUri}</uri><scale>${fmtVec3(geometry.scale)}</scale></mesh>`,
     `        </geometry>`,
+    ...(surfaceBlock ? [surfaceBlock] : []),
     ...(matBlock ? [matBlock] : []),
     `      </${tag}>`,
   ].join('\n');
@@ -187,22 +196,54 @@ export function generateRobotSdf(project: Project, target: TargetConfig): string
     `    <static>false</static>`,
   ];
 
+  const isSkidSteer = robot.plugins.some(
+    (p) =>
+      p.kind === 'diff_drive' && (p.leftJointIds.length > 1 || p.rightJointIds.length > 1),
+  );
+  const drivenWheelLinkIds = new Set<string>();
+  for (const plugin of robot.plugins) {
+    if (plugin.kind === 'diff_drive') {
+      for (const jId of [...plugin.leftJointIds, ...plugin.rightJointIds]) {
+        const j = jointMap.get(jId);
+        if (j) drivenWheelLinkIds.add(j.child.linkId);
+      }
+    } else if (plugin.kind === 'ackermann') {
+      for (const jId of [plugin.leftWheelJointId, plugin.rightWheelJointId]) {
+        const j = jointMap.get(jId);
+        if (j) drivenWheelLinkIds.add(j.child.linkId);
+      }
+    }
+  }
+
   for (const link of robot.links) {
     const linkPose = linkPoses.get(link.id) ?? { xyz: [0, 0, 0], rpy: [0, 0, 0] };
     const inertiaRes = resolveLinkInertia(link);
     const i = inertiaRes.inertia;
-    const com: [number, number, number] = link.inertial.auto
-      ? inertiaRes.centerOfMass
-      : link.inertial.pose.xyz;
+    const useVisualPose = link.inertial.auto && link.visual.geometry.type === 'primitive';
+    const com: [number, number, number] = useVisualPose
+      ? link.visual.pose.xyz
+      : link.inertial.auto
+        ? inertiaRes.centerOfMass
+        : link.inertial.pose.xyz;
+    const inertialRpy: [number, number, number] = useVisualPose
+      ? link.visual.pose.rpy
+      : link.inertial.pose.rpy;
     const collisionGeom =
       'sameAsVisual' in link.collision ? link.visual.geometry : link.collision.geometry;
     const collisionPose = 'sameAsVisual' in link.collision ? link.visual.pose : link.collision.pose;
+    const isCaster = link.name.toLowerCase().includes('caster');
+    const isWheel = drivenWheelLinkIds.has(link.id) || link.name.toLowerCase().includes('wheel');
+    const friction = isCaster
+      ? { mu: 0.01, mu2: 0.01 }
+      : isWheel
+        ? { mu: 1.0, mu2: isSkidSteer ? 0.5 : 1.0 }
+        : undefined;
 
     lines.push(``);
     lines.push(`    <link name="${escapeXml(link.name)}">`);
     lines.push(`      <pose>${fmtPoseSdf(linkPose)}</pose>`);
     lines.push(`      <inertial>`);
-    lines.push(`        <pose>${fmtVec3(com)} ${fmtVec3(link.inertial.pose.rpy)}</pose>`);
+    lines.push(`        <pose>${fmtVec3(com)} ${fmtVec3(inertialRpy)}</pose>`);
     lines.push(`        <mass>${fmt(link.inertial.mass)}</mass>`);
     lines.push(`        <inertia>`);
     lines.push(
@@ -222,6 +263,9 @@ export function generateRobotSdf(project: Project, target: TargetConfig): string
         collisionPose,
         pkgName,
         assets,
+        undefined,
+        [],
+        friction,
       ),
     );
     lines.push(
@@ -307,10 +351,35 @@ export function generateRobotSdf(project: Project, target: TargetConfig): string
       }
       lines.push(`      <wheel_separation>${fmt(plugin.wheelSeparation)}</wheel_separation>`);
       lines.push(`      <wheel_radius>${fmt(plugin.wheelRadius)}</wheel_radius>`);
+      if (plugin.maxLinearAcceleration !== undefined) {
+        lines.push(
+          `      <max_linear_acceleration>${fmt(plugin.maxLinearAcceleration)}</max_linear_acceleration>`,
+        );
+      }
+      lines.push(`      <odom_publish_frequency>50</odom_publish_frequency>`);
       lines.push(`      <topic>${escapeXml(plugin.cmdVelTopic)}</topic>`);
       lines.push(`      <odom_topic>${escapeXml(plugin.odomTopic)}</odom_topic>`);
+      lines.push(`      <tf_topic>/tf</tf_topic>`);
       lines.push(`      <frame_id>odom</frame_id>`);
       lines.push(`      <child_frame_id>${escapeXml(rootName)}</child_frame_id>`);
+      lines.push(`    </plugin>`);
+    } else if (plugin.kind === 'ackermann') {
+      const spec = target.robotPlugins.ackermann;
+      const ls = jointMap.get(plugin.leftSteerJointId);
+      const rs = jointMap.get(plugin.rightSteerJointId);
+      const lw = jointMap.get(plugin.leftWheelJointId);
+      const rw = jointMap.get(plugin.rightWheelJointId);
+      lines.push(``);
+      lines.push(`    <plugin filename="${spec.filename}" name="${spec.name}">`);
+      if (ls) lines.push(`      <left_steering_joint>${escapeXml(ls.name)}</left_steering_joint>`);
+      if (rs) lines.push(`      <right_steering_joint>${escapeXml(rs.name)}</right_steering_joint>`);
+      if (lw) lines.push(`      <left_joint>${escapeXml(lw.name)}</left_joint>`);
+      if (rw) lines.push(`      <right_joint>${escapeXml(rw.name)}</right_joint>`);
+      lines.push(`      <kingpin_width>${fmt(plugin.trackWidth)}</kingpin_width>`);
+      lines.push(`      <wheel_base>${fmt(plugin.wheelbase)}</wheel_base>`);
+      lines.push(`      <wheel_radius>${fmt(plugin.wheelRadius)}</wheel_radius>`);
+      lines.push(`      <topic>${escapeXml(plugin.cmdVelTopic)}</topic>`);
+      lines.push(`      <odom_topic>${escapeXml(plugin.odomTopic)}</odom_topic>`);
       lines.push(`    </plugin>`);
     } else if (plugin.kind === 'joint_state_publisher') {
       const spec = target.robotPlugins.jointStatePublisher;
@@ -318,6 +387,19 @@ export function generateRobotSdf(project: Project, target: TargetConfig): string
       lines.push(`    <plugin filename="${spec.filename}" name="${spec.name}">`);
       lines.push(`      <topic>${escapeXml(plugin.topic)}</topic>`);
       lines.push(`    </plugin>`);
+    } else if (plugin.kind === 'joint_controller') {
+      const spec = target.robotPlugins.jointController;
+      const j = jointMap.get(plugin.jointId);
+      if (j) {
+        lines.push(``);
+        lines.push(`    <plugin filename="${spec.filename}" name="${spec.name}">`);
+        lines.push(`      <joint_name>${escapeXml(j.name)}</joint_name>`);
+        lines.push(`      <topic>${escapeXml(plugin.topic)}</topic>`);
+        lines.push(`      <p_gain>${fmt(plugin.pGain)}</p_gain>`);
+        lines.push(`      <i_gain>${fmt(plugin.iGain)}</i_gain>`);
+        lines.push(`      <d_gain>${fmt(plugin.dGain)}</d_gain>`);
+        lines.push(`    </plugin>`);
+      }
     }
   }
 
